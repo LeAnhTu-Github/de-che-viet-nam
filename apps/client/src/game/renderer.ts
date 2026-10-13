@@ -37,6 +37,7 @@ export class GameRenderer {
   private minimap: Minimap | null = null;
   private inited = false;
   private destroyed = false;
+  private appReady = false;
 
   constructor(private readonly container: HTMLElement) {
     this.camera = new Camera(0, 0);
@@ -52,7 +53,14 @@ export class GameRenderer {
       background: 0x14100b,
       antialias: false,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
+      // Thiếu autoDensity: màn Retina (dpr=2) canvas CSS to gấp đôi container → lệch camera/chuột.
+      autoDensity: true,
     });
+    this.appReady = true;
+    if (this.destroyed) {
+      this.teardown();
+      return;
+    }
     const canvas = this.app.canvas;
     canvas.style.display = 'block';
     this.container.appendChild(canvas);
@@ -61,11 +69,12 @@ export class GameRenderer {
     this.camera.mapH = map.height * TILE_SIZE;
     this.camera.setViewport(this.container.clientWidth, this.container.clientHeight);
 
-    // Load manifest sprite (không chặn quá 3s; thiếu → dùng placeholder)
+    // Load manifest + sprite tile/nhà/tài nguyên (không chặn quá 8s; thiếu → dùng placeholder)
     await Promise.race([
       ensureSpriteManifest(),
-      new Promise((r) => setTimeout(r, 3000)),
+      new Promise((r) => setTimeout(r, 8000)),
     ]);
+    if (this.destroyed) return;
 
     this.buildGround(map);
 
@@ -236,6 +245,13 @@ export class GameRenderer {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    // Hủy trước khi app.init() xong (StrictMode / rời màn sớm): app chưa có ticker/canvas
+    // → init() tự dọn sau khi await xong.
+    if (!this.appReady) return;
+    this.teardown();
+  }
+
+  private teardown(): void {
     this.app.ticker.remove(this.tick);
     this.input?.destroy();
     this.input = null;
@@ -245,6 +261,7 @@ export class GameRenderer {
     this.chunks.length = 0;
     destroyTileTextures();
     this.app.canvas.remove();
-    this.app.destroy(true, { children: true, texture: true });
+    // texture: false — texture sprite PNG dùng chung giữa các ván (cache của spriteManager).
+    this.app.destroy(true, { children: true, texture: false });
   }
 }

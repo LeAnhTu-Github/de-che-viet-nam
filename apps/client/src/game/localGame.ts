@@ -25,7 +25,8 @@ import { TILE_SIZE } from './map';
 import type { EntityView } from './entityView';
 import type { GameRenderer } from './renderer';
 import { SelectionManager } from './selection';
-import { syncEntitiesToRenderer } from './entitySync';
+import { syncEntitiesToRenderer, defIdOf } from './entitySync';
+import { pickEntity } from './picking';
 
 /* ───────────────── Interface chốt với worker sim ───────────────── */
 
@@ -82,6 +83,16 @@ export interface SimBuildCommand {
   buildingId: string;
   x: number;
   y: number;
+  /** Có → xây tiếp công trường đã có thay vì dựng nhà mới. */
+  siteId?: number;
+}
+
+/** Lệnh attack — click phải vào địch (khớp AttackCommand của sim). */
+export interface SimAttackCommand {
+  type: 'attack';
+  playerId: number;
+  unitIds: number[];
+  targetId: number;
 }
 
 /**
@@ -138,6 +149,7 @@ export type SimCommand =
   | SimMoveCommand
   | SimTrainCommand
   | SimBuildCommand
+  | SimAttackCommand
   | SimAttackMoveCommand
   | SimResearchCommand
   | SimGatherCommand
@@ -278,6 +290,8 @@ export class LocalGameController {
   readonly game: SimGamePort;
 
   private readonly views = new Map<number, EntityView>();
+  /** Entity đang bị rê chuột lên (GameView gán). */
+  hoverId: number | null = null;
   private accum = 0;
 
   /**
@@ -349,7 +363,7 @@ export class LocalGameController {
     } catch {
       /* defensive: adapter nào không có getProjectiles thì bỏ qua */
     }
-    syncEntitiesToRenderer(this.views, renderer, this.game.entities, this.selection, projectiles);
+    syncEntitiesToRenderer(this.views, renderer, this.game.entities, this.selection, projectiles, this.hoverId);
   }
 
   /** Entities hiện tại — cho interface GameController dùng chung với net mode. */
@@ -443,6 +457,30 @@ export class LocalGameController {
     const ids = this.selectedVillagers().map((u) => u.id);
     if (ids.length === 0) return;
     this.game.addCommand({ type: 'gather', playerId: this.humanPlayerId, unitIds: ids, targetId, resource });
+  }
+
+  /** Click phải vào địch: mọi unit đang chọn của phe mình tấn công mục tiêu. */
+  issueAttack(targetId: number): void {
+    const owned = new Set(this.unitsOfPlayer(this.humanPlayerId).map((u) => u.id));
+    const ids = [...this.selection.selected].filter((id) => owned.has(id));
+    if (ids.length === 0) return;
+    this.game.addCommand({ type: 'attack', playerId: this.humanPlayerId, unitIds: ids, targetId });
+  }
+
+  /** Click phải vào nhà đang xây của mình: dân đang chọn tới xây tiếp. */
+  issueBuildSite(siteId: number): void {
+    const site = this.entities.get(siteId);
+    const ids = this.selectedVillagers().map((v) => v.id);
+    if (!site || ids.length === 0) return;
+    this.game.addCommand({
+      type: 'build',
+      playerId: this.humanPlayerId,
+      unitIds: ids,
+      buildingId: defIdOf(site),
+      x: site.x,
+      y: site.y,
+      siteId,
+    });
   }
 
   /** Ra lệnh dừng (phím S): các unit đang chọn của phe người đứng yên, hủy nhiệm vụ. */
@@ -551,20 +589,8 @@ export class LocalGameController {
     return out;
   }
 
-  /** Unit/building gần nhất trong bán kính r (px) quanh world (x, y). */
-  entityAt(x: number, y: number, r: number): SimEntity | undefined {
-    let best: SimEntity | undefined;
-    let bestD = Infinity;
-    for (const e of this.game.entities.values()) {
-      if (e.kind !== 'unit' && e.kind !== 'building') continue;
-      // Nhà to hơn unit nên nới bán kính bắt điểm.
-      const er = e.kind === 'building' ? Math.max(r, 52) : r;
-      const d = Math.hypot(e.x - x, e.y - y);
-      if (d <= er && d < bestD) {
-        best = e;
-        bestD = d;
-      }
-    }
-    return best;
+  /** Entity (unit/nhà/tài nguyên) dưới con trỏ — bắt theo hình sprite. */
+  entityAt(x: number, y: number): SimEntity | undefined {
+    return pickEntity(this.game.entities.values(), x, y);
   }
 }

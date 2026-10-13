@@ -37,7 +37,8 @@ import {
   type VisionMap,
   isSimUnit,
 } from './localGame';
-import { syncEntitiesToRenderer, maxHpOf } from './entitySync';
+import { syncEntitiesToRenderer, maxHpOf, defIdOf } from './entitySync';
+import { pickEntity } from './picking';
 
 /** Delay render so với snapshot mới nhất (tick 20Hz → 2 tick ≈ 133ms). */
 const RENDER_DELAY_TICKS = 2;
@@ -106,6 +107,8 @@ export class NetGameController {
   /** Entities đã nội suy — expose qua getter `entities`. */
   private readonly interp = new Map<number, SimEntity>();
   private readonly views = new Map<number, EntityView>();
+  /** Entity đang bị rê chuột lên (GameView gán). */
+  hoverId: number | null = null;
   private projectiles: SimProjectile[] = [];
   private lastRes: { resources: ResourceBag; pop: number; popCap: number } = {
     resources: { wood: 0, food: 0, gold: 0, stone: 0 },
@@ -311,7 +314,7 @@ export class NetGameController {
 
   /** Đồng bộ entities đã nội suy → renderer (helper dùng chung với local). */
   syncToRenderer(renderer: GameRenderer): void {
-    syncEntitiesToRenderer(this.views, renderer, this.interp, this.selection, this.projectiles);
+    syncEntitiesToRenderer(this.views, renderer, this.interp, this.selection, this.projectiles, this.hoverId);
   }
 
   /* ─────────── Gửi lệnh lên server (không chạy sim local) ─────────── */
@@ -378,6 +381,30 @@ export class NetGameController {
     const ids = this.selectedVillagers().map((u) => u.id);
     if (ids.length === 0) return;
     this.sendCommand({ type: 'gather', playerId: this.humanPlayerId, unitIds: ids, targetId, resource });
+  }
+
+  /** Click phải vào địch: mọi unit đang chọn của phe mình tấn công mục tiêu. */
+  issueAttack(targetId: number): void {
+    const owned = new Set(this.unitsOfPlayer(this.humanPlayerId).map((u) => u.id));
+    const ids = [...this.selection.selected].filter((id) => owned.has(id));
+    if (ids.length === 0) return;
+    this.sendCommand({ type: 'attack', playerId: this.humanPlayerId, unitIds: ids, targetId });
+  }
+
+  /** Click phải vào nhà đang xây của mình: dân đang chọn tới xây tiếp. */
+  issueBuildSite(siteId: number): void {
+    const site = this.entities.get(siteId);
+    const ids = this.selectedVillagers().map((v) => v.id);
+    if (!site || ids.length === 0) return;
+    this.sendCommand({
+      type: 'build',
+      playerId: this.humanPlayerId,
+      unitIds: ids,
+      buildingId: defIdOf(site),
+      x: site.x,
+      y: site.y,
+      siteId,
+    });
   }
 
   /** Ra lệnh dừng (phím S): các unit đang chọn của phe mình đứng yên, hủy nhiệm vụ. */
@@ -511,20 +538,9 @@ export class NetGameController {
     return out;
   }
 
-  /** Unit/building gần nhất trong bán kính r (px) quanh world (x, y). */
-  entityAt(x: number, y: number, r: number): SimEntity | undefined {
-    let best: SimEntity | undefined;
-    let bestD = Infinity;
-    for (const e of this.interp.values()) {
-      if (e.kind !== 'unit' && e.kind !== 'building') continue;
-      const er = e.kind === 'building' ? Math.max(r, 52) : r;
-      const d = Math.hypot(e.x - x, e.y - y);
-      if (d <= er && d < bestD) {
-        best = e;
-        bestD = d;
-      }
-    }
-    return best;
+  /** Entity (unit/nhà/tài nguyên) dưới con trỏ — bắt theo hình sprite. */
+  entityAt(x: number, y: number): SimEntity | undefined {
+    return pickEntity(this.interp.values(), x, y);
   }
 
   /** Fog local của phe mình (tính từ entities đã nội suy). */

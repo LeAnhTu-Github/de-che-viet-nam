@@ -13,8 +13,11 @@ import {
   resolveUnitFrame,
   unitDisplayHeight,
   buildingSpriteState,
+  buildingDisplayWidth,
+  buildingFootprint,
+  unitFootRadius,
+  spriteEpoch,
   resolveBuilding,
-  buildingDisplayHeight,
   resolveResource,
   resourceDisplayHeight,
   dir8FromDelta,
@@ -55,6 +58,8 @@ export interface EntityData {
   resMaxAmount?: number;
 }
 
+type UnitFrame = NonNullable<ReturnType<typeof resolveUnitFrame>>;
+
 const HP_W = 32;
 
 /** Màu placeholder cũ (fallback khi thiếu sprite). */
@@ -90,6 +95,8 @@ export class EntityView extends PIXI.Container {
   private curFrame = -1;
   private curSpriteState: SpriteUnitState = 'idle';
   private visualKey = '';
+  private hovered = false;
+  private seenEpoch = spriteEpoch();
 
   constructor(data: EntityData) {
     super();
@@ -143,7 +150,7 @@ export class EntityView extends PIXI.Container {
         if (key !== this.visualKey) {
           const t = resolveBuilding(sid, st);
           if (t) {
-            this.showSprite(t, buildingDisplayHeight(sid));
+            this.showBuilding(t, d.defId);
             built = true;
           }
         } else built = true;
@@ -159,7 +166,7 @@ export class EntityView extends PIXI.Container {
           this.curFrame = -1;
           const r = resolveUnitFrame(sid, st, this.facing, 0);
           if (r) {
-            this.showSprite(r.texture, unitDisplayHeight(sid));
+            this.showUnit(r, sid);
             built = true;
           }
         } else built = true;
@@ -183,7 +190,7 @@ export class EntityView extends PIXI.Container {
     this.layoutChrome();
   }
 
-  /** Hiển thị sprite PNG: anchor chân (0.5, 1), scale theo chiều cao mục tiêu. */
+  /** Tài nguyên: 1 ảnh tĩnh, anchor đáy giữa, scale theo chiều cao mục tiêu. */
   private showSprite(t: PIXI.Texture, targetH: number): void {
     this.clearBody();
     const spr = new PIXI.Sprite(t);
@@ -192,15 +199,51 @@ export class EntityView extends PIXI.Container {
     spr.anchor.set(0.5, 1);
     this.sprite = spr;
     this.body.addChild(spr);
-    this.bodyTop = targetH;
+    this.bodyTop = -targetH;
     this.bobAmp = 0;
-    // Bóng theo chiều rộng sprite
     const w = t.width * s;
     this.drawShadow(w * 0.72, 9);
-    // Vòng chọn theo bounds sprite
     this.ring.clear();
-    this.ring.rect(-w / 2 - 4, -targetH - 4, w + 8, targetH + 8)
-      .stroke({ color: 0x35e05a, width: 2 });
+    this.ring.ellipse(0, -3, w * 0.42, w * 0.2).stroke({ color: 0xffffff, width: 2 });
+  }
+
+  /**
+   * Unit: mỗi frame có điểm đặt chân + scale riêng (manifest.unitMeta) nên nhân vật giữ
+   * nguyên cỡ và chân luôn chạm đất. Vòng chọn / thanh máu theo CỠ CHUẨN của loại unit,
+   * không theo kích thước frame (frame vung vũ khí rộng gấp đôi người).
+   */
+  private showUnit(r: UnitFrame, spriteId: string): void {
+    this.clearBody();
+    const spr = new PIXI.Sprite(r.texture);
+    spr.anchor.set(r.anchorX, r.anchorY);
+    spr.scale.set(r.scale);
+    this.sprite = spr;
+    this.body.addChild(spr);
+    this.bodyTop = -unitDisplayHeight(spriteId);
+    this.bobAmp = 0;
+    const rx = unitFootRadius(spriteId);
+    this.drawShadow(rx * 1.7, rx * 0.7);
+    this.ring.clear();
+    this.ring.ellipse(0, -2, rx, rx * 0.5).stroke({ color: 0xffffff, width: 2 });
+  }
+
+  /** Nhà: sprite phủ vừa nền nhà (footprint), đáy sprite trùng mép dưới nền. */
+  private showBuilding(t: PIXI.Texture, defId: string): void {
+    this.clearBody();
+    const fp = buildingFootprint(defId);
+    const spr = new PIXI.Sprite(t);
+    const s = buildingDisplayWidth(defId) / Math.max(1, t.width);
+    spr.scale.set(s);
+    spr.anchor.set(0.5, 1);
+    spr.y = fp.h / 2;
+    this.sprite = spr;
+    this.body.addChild(spr);
+    this.bodyTop = fp.h / 2 - t.height * s;
+    this.bobAmp = 0;
+    this.shadow.clear();
+    // Vòng chọn = viền nền nhà (kiểu AoE).
+    this.ring.clear();
+    this.ring.rect(-fp.w / 2, -fp.h / 2, fp.w, fp.h).stroke({ color: 0xffffff, width: 2 });
   }
 
   /** Placeholder cũ (fallback) — giữ nguyên hình vẽ trước đây. */
@@ -356,6 +399,7 @@ export class EntityView extends PIXI.Container {
     const color = ratio > 0.5 ? 0x4caf50 : ratio > 0.25 ? 0xffc107 : 0xf44336;
     this.hpFill.clear();
     this.hpFill.rect(-HP_W / 2, this.bodyTop - 8, HP_W * ratio, 4).fill(color);
+    this.updateChrome();
     // Nhà vừa bị phá → chuyển sang rubble (wasAlive chặn đệ quy qua layoutChrome)
     if (this.data.kind === 'building' && this.sprite && wasAlive && hp <= 0) {
       this.refreshVisual();
@@ -365,10 +409,47 @@ export class EntityView extends PIXI.Container {
   setSelected(selected: boolean): void {
     this.data.selected = selected;
     this.ring.visible = selected;
+    this.updateChrome();
+  }
+
+  /** Con trỏ đang rê lên entity này (hiện tên + thanh máu). */
+  setHovered(hovered: boolean): void {
+    if (this.hovered === hovered) return;
+    this.hovered = hovered;
+    this.updateChrome();
+  }
+
+  /**
+   * Kiểu AoE: tên chỉ hiện khi chọn / rê chuột; thanh máu hiện thêm khi unit, nhà đang mất máu.
+   */
+  private updateChrome(): void {
+    const focus = !!this.data.selected || this.hovered;
+    const d = this.data;
+    const ownable = d.kind === 'villager' || d.kind === 'soldier' || d.kind === 'building';
+    const hurt = ownable && d.hp > 0 && d.hp < d.maxHp;
+    this.nameLabel.visible = focus;
+    this.hpBg.visible = this.hpFill.visible = focus || hurt;
+  }
+
+  /** Quay mặt về điểm (x, y) — dùng khi đứng đánh / chặt / xây (không di chuyển). */
+  faceToward(x: number, y: number): void {
+    const dx = x - this.position.x;
+    const dy = y - this.position.y;
+    if (dx * dx + dy * dy < 4) return;
+    const dir = dir8FromDelta(dx, dy);
+    if (dir !== this.facing) {
+      this.facing = dir;
+      this.refreshVisual();
+    }
   }
 
   /** Gọi mỗi frame khi entity nằm trong viewport (đã cull). */
   tick(dt: number): void {
+    // Sprite vừa load xong (lazy) → dựng lại thay placeholder.
+    if (this.seenEpoch !== spriteEpoch()) {
+      this.seenEpoch = spriteEpoch();
+      if (!this.sprite) this.refreshVisual();
+    }
     if (this.sprite && (this.data.kind === 'villager' || this.data.kind === 'soldier')) {
       // Animation theo frame
       const sid = this.data.defId ? UNIT_SPRITE[this.data.defId] : undefined;
@@ -377,6 +458,8 @@ export class EntityView extends PIXI.Container {
         const st = this.curSpriteState;
         const r = resolveUnitFrame(sid, st, this.facing, 0);
         if (r) {
+          // Thiếu bộ ảnh đi bộ (rơi về ảnh đứng yên) → nhún nhẹ để không "trượt" trên đất.
+          this.body.y = st === 'walk' && r.state !== 'walk' ? -Math.abs(Math.sin(this.animTime * 9)) * 2.5 : 0;
           const fps = STATE_FPS[st];
           let f: number;
           if (st === 'die') {
@@ -389,7 +472,8 @@ export class EntityView extends PIXI.Container {
             const rr = resolveUnitFrame(sid, st, this.facing, f);
             if (rr) {
               this.sprite.texture = rr.texture;
-              // die chỉ có hướng down — facing có thể khác, texture đã fallback
+              this.sprite.anchor.set(rr.anchorX, rr.anchorY);
+              this.sprite.scale.set(rr.scale);
             }
           }
         }

@@ -7,11 +7,16 @@
  *  - resources/vn_res_*.png, resources/vn_tile_*.png
  *  - manifest.json: liệt kê frame thực có trên đĩa (sinh bởi prepare_client_assets.py)
  *
- * Nguyên tắc: mọi getter trả về null khi thiếu file → caller dùng placeholder cũ.
- * Texture load lazy qua PIXI.Texture.from + cache (không preload 2000+ file).
+ * Nguyên tắc: mọi getter trả về null khi thiếu file HOẶC chưa load xong → caller dùng
+ * placeholder cũ, rồi dựng lại khi spriteEpoch() đổi.
+ * Load qua PIXI.Assets (Pixi v8: Texture.from(url) KHÔNG tự tải file):
+ *  - tile + nhà + tài nguyên (~70 file): preload ngay sau manifest.
+ *  - unit (~180 file/loại): load lazy cả bộ khi loại unit đó xuất hiện lần đầu.
  */
 import * as PIXI from 'pixi.js';
+import { BUILDINGS } from '@aoe-vn/sim';
 import type { UnitState } from '@aoe-vn/sim';
+import { TILE_SIZE } from './map';
 
 export const DIRS8 = [
   'down',
@@ -99,11 +104,6 @@ const UNIT_H: Record<string, number> = {
   maybanda: 64, nothan: 70,
 };
 
-const BUILDING_H: Record<string, number> = {
-  dinhlang: 150, nhasan: 95, khothoc: 95, nhakho: 95, ruonglua: 55,
-  trailinh: 105, truongban: 105, chuongngua: 105, choicanh: 115, tuongdat: 45,
-};
-
 /** Tốc độ animation (frame/giây) theo state. */
 export const STATE_FPS: Record<SpriteUnitState, number> = {
   idle: 4,
@@ -117,6 +117,11 @@ export const STATE_FPS: Record<SpriteUnitState, number> = {
 
 interface Manifest {
   units: Record<string, Record<string, Record<string, number>>>;
+  /**
+   * Từng frame unit [ax, ay, k] (sinh bởi normalize_units.py): (ax, ay) = điểm đặt chân
+   * trong ảnh đã cắt, k = 1 / chiều-cao-chuẩn → scale vẽ = chiều cao hiển thị * k.
+   */
+  unitMeta?: Record<string, Record<string, Record<string, [number, number, number][]>>>;
   buildings: Record<string, string[]>;
   resources: string[];
   tiles: string[];
@@ -130,8 +135,14 @@ export function ensureSpriteManifest(): Promise<void> {
   if (manifestPromise) return manifestPromise;
   manifestPromise = fetch('sprites/manifest.json')
     .then((r) => (r.ok ? r.json() : null))
-    .then((m) => {
+    .then((m: Manifest | null) => {
       manifest = m;
+      if (!m) return;
+      const core = [...m.tiles, ...m.resources].map((f) => `sprites/${f}`);
+      for (const [id, states] of Object.entries(m.buildings)) {
+        for (const st of states) core.push(`sprites/vn_bld_${id}_${st}.png`);
+      }
+      return loadPaths(core);
     })
     .catch(() => {
       manifest = null;
@@ -146,14 +157,44 @@ export function spriteManifestLoaded(): boolean {
 /* ── Texture cache ───────────────────────────────────────── */
 
 const texCache = new Map<string, PIXI.Texture>();
+let epoch = 0;
 
-function tex(path: string): PIXI.Texture {
-  let t = texCache.get(path);
-  if (!t) {
-    t = PIXI.Texture.from(path);
-    texCache.set(path, t);
+/** Tăng mỗi khi có thêm texture load xong — view so sánh để dựng lại từ placeholder. */
+export function spriteEpoch(): number {
+  return epoch;
+}
+
+/** Texture đã load xong, hoặc null (chưa load / thiếu file). */
+function tex(path: string): PIXI.Texture | null {
+  return texCache.get(path) ?? null;
+}
+
+async function loadPaths(paths: string[]): Promise<void> {
+  const todo = paths.filter((p) => !texCache.has(p));
+  if (todo.length === 0) return;
+  const res = (await PIXI.Assets.load(todo)) as Record<string, PIXI.Texture>;
+  for (const p of todo) {
+    const t = res[p];
+    if (t) texCache.set(p, t);
   }
-  return t;
+  epoch++;
+}
+
+const unitsRequested = new Set<string>();
+
+/** Load lazy toàn bộ frame của 1 loại unit (gọi nhiều lần vô hại). */
+function requestUnit(spriteId: string): void {
+  if (unitsRequested.has(spriteId)) return;
+  const u = manifest?.units[spriteId];
+  if (!u) return;
+  unitsRequested.add(spriteId);
+  const paths: string[] = [];
+  for (const [st, dirs] of Object.entries(u)) {
+    for (const [dir, count] of Object.entries(dirs)) {
+      for (let f = 0; f < count; f++) paths.push(`sprites/vn_unit_${spriteId}_${st}_${dir}_${f}.png`);
+    }
+  }
+  loadPaths(paths).catch(() => unitsRequested.delete(spriteId));
 }
 
 /* ── Unit ────────────────────────────────────────────────── */
@@ -190,7 +231,18 @@ export function resolveUnitFrame(
   state: SpriteUnitState,
   dir: Dir8,
   frame: number,
-): { texture: PIXI.Texture; state: SpriteUnitState; dir: Dir8; frame: number; count: number } | null {
+): {
+  texture: PIXI.Texture;
+  state: SpriteUnitState;
+  dir: Dir8;
+  frame: number;
+  count: number;
+  /** Điểm đặt chân, tỉ lệ 0..1 trong texture (dùng làm anchor). */
+  anchorX: number;
+  anchorY: number;
+  /** Scale vẽ (world px / px ảnh) — giữ nhân vật cùng cỡ ở mọi frame. */
+  scale: number;
+} | null {
   const u = manifest?.units[spriteId];
   if (!u) return null;
   const stKey = (u[state] ? state : 'idle') as SpriteUnitState;
@@ -199,8 +251,18 @@ export function resolveUnitFrame(
   const count = st[dirKey];
   if (!count) return null;
   const f = Math.min(frame, count - 1);
+  const texture = tex(`sprites/vn_unit_${spriteId}_${stKey}_${dirKey}_${f}.png`);
+  if (!texture) {
+    requestUnit(spriteId);
+    return null;
+  }
+  const meta = manifest?.unitMeta?.[spriteId]?.[stKey]?.[dirKey]?.[f];
+  const H = unitDisplayHeight(spriteId);
   return {
-    texture: tex(`sprites/vn_unit_${spriteId}_${stKey}_${dirKey}_${f}.png`),
+    texture,
+    anchorX: meta ? meta[0] / texture.width : 0.5,
+    anchorY: meta ? meta[1] / texture.height : 1,
+    scale: meta ? H * meta[2] : H / Math.max(1, texture.height),
     state: stKey,
     dir: dirKey,
     frame: f,
@@ -210,6 +272,12 @@ export function resolveUnitFrame(
 
 export function unitDisplayHeight(spriteId: string): number {
   return UNIT_H[spriteId] ?? 48;
+}
+
+
+/** Bán kính ngang vòng chọn dưới chân unit (world px) — theo loại unit, không theo frame. */
+export function unitFootRadius(spriteId: string): number {
+  return Math.max(13, unitDisplayHeight(spriteId) * 0.3);
 }
 
 /* ── Building ────────────────────────────────────────────── */
@@ -229,14 +297,18 @@ export function resolveBuilding(
   const states = manifest?.buildings[spriteId];
   if (!states) return null;
   const st = states.includes(state) ? state : states.includes('idle') ? 'idle' : states[0];
-  if (st === 'straight' || st === 'corner') {
-    return tex(`sprites/vn_bld_${spriteId}_${st}.png`);
-  }
   return tex(`sprites/vn_bld_${spriteId}_${st}.png`);
 }
 
-export function buildingDisplayHeight(spriteId: string): number {
-  return BUILDING_H[spriteId] ?? 90;
+/** Nền nhà (footprint) theo world px, tâm tại vị trí entity. */
+export function buildingFootprint(defId: string): { w: number; h: number } {
+  const [tw, th] = (BUILDINGS[defId]?.size ?? '2x2').split('x').map(Number);
+  return { w: tw * TILE_SIZE, h: th * TILE_SIZE };
+}
+
+/** Bề ngang vẽ sprite nhà: phủ vừa nền nhà (hơi trùm mép cho mái). */
+export function buildingDisplayWidth(defId: string): number {
+  return buildingFootprint(defId).w * 1.12;
 }
 
 /* ── Resource ────────────────────────────────────────────── */
@@ -282,8 +354,9 @@ export function resolveResource(
 ): { texture: PIXI.Texture; file: string } | null {
   const file = resourceSpriteFile(defId, amount, maxAmount, entityId);
   if (!file) return null;
-  if (manifest && !manifest.resources.includes(file.replace('sprites/', ''))) return null;
-  return { texture: tex(file), file };
+  const texture = tex(file);
+  if (!texture) return null;
+  return { texture, file };
 }
 
 /** Chiều cao hiển thị tài nguyên (world px). */
@@ -320,7 +393,6 @@ const TILE_PNG: Record<string, string> = {
 export function resolveTile(kind: string): PIXI.Texture | null {
   const p = TILE_PNG[kind];
   if (!p) return null;
-  if (manifest && !manifest.tiles.includes(p.replace('sprites/', ''))) return null;
   return tex(p);
 }
 

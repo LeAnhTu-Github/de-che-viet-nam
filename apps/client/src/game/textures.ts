@@ -8,6 +8,8 @@ import { mulberry32 } from './map';
 import { resolveTile } from './spriteManager';
 
 const cache = new Map<TerrainKind, PIXI.Texture>();
+/** Tile vẽ bằng code — chỉ những cái này mới destroy (PNG thuộc cache của spriteManager). */
+const generated = new Set<PIXI.Texture>();
 
 function drawGrass(g: PIXI.Graphics, base: number, seed: number): void {
   g.rect(0, 0, TILE_SIZE, TILE_SIZE).fill(base);
@@ -85,7 +87,9 @@ export function getTileTextures(renderer: PIXI.Renderer): Record<TerrainKind, PI
     let tex = cache.get(kind);
     if (!tex) {
       // Ưu tiên sprite PNG thật; thiếu → fallback vẽ bằng code như cũ
-      tex = resolveTile(kind) ?? makeGeneratedTile(renderer, kind);
+      const png = resolveTile(kind);
+      tex = png ?? makeGeneratedTile(renderer, kind);
+      if (!png) generated.add(tex);
       cache.set(kind, tex);
     }
     out[kind] = tex;
@@ -103,6 +107,7 @@ function makeGeneratedTile(renderer: PIXI.Renderer, kind: TerrainKind): PIXI.Tex
 }
 
 export function destroyTileTextures(): void {
-  for (const tex of cache.values()) tex.destroy(true);
+  for (const tex of generated) tex.destroy(true);
+  generated.clear();
   cache.clear();
 }

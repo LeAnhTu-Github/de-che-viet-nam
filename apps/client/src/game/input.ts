@@ -2,11 +2,11 @@
  * input.ts — Điều khiển camera + chọn unit cho RTS (Phase 1b → 2b).
  *
  * CHỐT theo spec:
- * - Pan: GIỮ CHUỘT GIỮA kéo, HOẶC phím mũi tên, HOẶC dí chuột sát viền (edge-scroll).
+ * - Pan: GIỮ CHUỘT PHẢI hoặc CHUỘT GIỮA kéo, HOẶC phím mũi tên, HOẶC dí chuột sát viền.
  *   (Bỏ WASD từ bản phím tắt AoE: A = attack-move, S = stop — giống bản gốc AoE1.)
  * - Zoom: lăn chuột, 0.4x–2.5x, zoom vào đúng vị trí con trỏ.
  * - Chuột trái: click = chọn 1 unit; nhấn+kéo = khung chọn nhiều unit (Phase 2b).
- * - Chuột phải: ra lệnh di chuyển tới vị trí click (Phase 2b).
+ * - Chuột phải: click (không kéo) = ra lệnh tại vị trí đó; nhấn + kéo = kéo map.
  */
 import type { Camera } from './camera';
 
@@ -20,7 +20,7 @@ export interface InputCallbacks {
   onLeftDrag?: (startWorld: WorldPoint, endWorld: WorldPoint) => void;
   /** Bắn liên tục trong lúc kéo chuột trái — để vẽ khung chọn trực tiếp. */
   onLeftDragMove?: (startWorld: WorldPoint, curWorld: WorldPoint) => void;
-  /** Click chuột phải (contextmenu đã bị chặn). */
+  /** Click chuột phải — bắn khi THẢ chuột mà không kéo (kéo = pan map). */
   onRightClick?: (world: WorldPoint, screen: WorldPoint) => void;
   /** Di chuột trên canvas (kể cả không nhấn nút) — dùng cho bóng ma đặt nhà. */
   onMouseMove?: (world: WorldPoint, screen: WorldPoint) => void;
@@ -41,6 +41,9 @@ export class InputManager {
   private leftDown = false;
   private leftSX = 0;
   private leftSY = 0;
+  private rightDown = false;
+  private rightSX = 0;
+  private rightSY = 0;
   private readonly disposers: Array<() => void> = [];
 
   constructor(
@@ -61,7 +64,11 @@ export class InputManager {
     this.on(this.canvas, 'wheel', this.handleWheel, { passive: false });
     this.on(window, 'keydown', this.handleKeyDown);
     this.on(window, 'keyup', this.handleKeyUp);
-    this.on(window, 'blur', () => this.keys.clear());
+    this.on(window, 'blur', () => {
+      this.keys.clear();
+      this.panning = false;
+      this.rightDown = false;
+    });
   }
 
   private on<K extends keyof HTMLElementEventMap>(
@@ -104,14 +111,27 @@ export class InputManager {
       this.leftSX = p.x;
       this.leftSY = p.y;
     } else if (e.button === 2) {
+      // Chuột phải: chưa biết là click (ra lệnh) hay kéo (pan) → quyết định khi di/thả.
       const p = this.canvasPos(e);
-      this.cbs.onRightClick?.(this.camera.screenToWorld(p.x, p.y), p);
+      this.rightDown = true;
+      this.rightSX = p.x;
+      this.rightSY = p.y;
+      this.lastMX = e.clientX;
+      this.lastMY = e.clientY;
     }
   };
 
   private readonly handleMouseUp = (e: MouseEvent): void => {
     if (e.button === 1) {
       this.panning = false;
+    } else if (e.button === 2 && this.rightDown) {
+      this.rightDown = false;
+      if (this.panning) {
+        this.panning = false;
+      } else {
+        const p = this.canvasPos(e);
+        this.cbs.onRightClick?.(this.camera.screenToWorld(p.x, p.y), p);
+      }
     } else if (e.button === 0 && this.leftDown) {
       this.leftDown = false;
       const p = this.canvasPos(e);
@@ -131,6 +151,13 @@ export class InputManager {
     const p = this.canvasPos(e);
     this.mouseX = p.x;
     this.mouseY = p.y;
+    if (
+      this.rightDown &&
+      !this.panning &&
+      Math.hypot(p.x - this.rightSX, p.y - this.rightSY) >= CLICK_TOLERANCE
+    ) {
+      this.panning = true;
+    }
     if (this.panning) {
       const dx = e.clientX - this.lastMX;
       const dy = e.clientY - this.lastMY;

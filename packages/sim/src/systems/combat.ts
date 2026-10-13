@@ -39,6 +39,7 @@ export function applyAttackCommand(game: Game, cmd: AttackCommand): void {
   for (const id of cmd.unitIds) {
     const e = game.entities.get(id);
     if (!e || e.kind !== 'unit' || e.hp <= 0) continue;
+    if (cmd.playerId !== undefined && e.playerId !== cmd.playerId) continue; // không phải unit của người gửi
     if (target.playerId === e.playerId) continue; // không tự đánh mình
     const def = UNITS[e.defId];
     if (!def || def.attack <= 0) continue; // unit không có khả năng tấn công

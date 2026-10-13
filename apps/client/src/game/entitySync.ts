@@ -56,6 +56,7 @@ export function syncEntitiesToRenderer(
   entities: Map<number, SimEntity>,
   selection: SelectionManager,
   projectiles: SimProjectile[] = [],
+  hoverId: number | null = null,
 ): void {
   const seen = new Set<number>();
   for (const e of entities.values()) {
@@ -97,8 +98,17 @@ export function syncEntitiesToRenderer(
       }
       const sel = selection.has(e.id);
       if (view.data.selected !== sel) view.setSelected(sel);
+      view.setHovered(e.id === hoverId);
       if (isUnit) {
-        view.setUnitState((e as SimUnitEntity).state);
+        const st = (e as SimUnitEntity).state;
+        view.setUnitState(st);
+        // Đứng đánh / chặt / xây → quay mặt về mục tiêu (sim local có id mục tiêu; net thì không).
+        if (st === 'attacking' || st === 'gathering' || st === 'building') {
+          const t = e as { targetId?: number | null; targetNodeId?: number | null; buildTargetId?: number | null };
+          const tid = st === 'attacking' ? t.targetId : st === 'gathering' ? t.targetNodeId : t.buildTargetId;
+          const target = tid != null ? entities.get(tid) : undefined;
+          if (target) view.faceToward(target.x, target.y);
+        }
       } else if (isBuilding) {
         view.setBuildProgress((e as { progress?: number }).progress ?? 1);
       } else if (isResource) {
@@ -138,6 +148,8 @@ export interface GameController {
   readonly humanPlayerId: number;
   /** Entities hiện tại (local: từ sim; net: đã nội suy giữa 2 snapshot). */
   readonly entities: Map<number, SimEntity>;
+  /** Entity đang bị rê chuột lên (GameView gán) — view hiện tên + thanh máu. */
+  hoverId: number | null;
 
   /** Chạy mỗi frame: local = fixed-step sim; net = cập nhật nội suy. */
   stepAccum(dt: number): void;
@@ -149,6 +161,10 @@ export interface GameController {
   issueBuild(buildingDefId: string, x: number, y: number): void;
   trainUnit(buildingId: number, unitDefId: string): void;
   issueAttackMove(x: number, y: number): void;
+  /** Click phải vào địch: mọi unit đang chọn (có sức đánh) tấn công mục tiêu. */
+  issueAttack(targetId: number): void;
+  /** Click phải vào nhà đang xây của mình: dân đang chọn tới xây tiếp. */
+  issueBuildSite(siteId: number): void;
   issueResearch(buildingId: number, techId: string): void;
   /** Ra lệnh khai thác node tài nguyên (Phase 7: client trước đây chưa từng gửi gather!). */
   issueGather(targetId: number, resource: ResourceType): void;
@@ -164,7 +180,8 @@ export interface GameController {
   selectedVillagers(): SimUnitEntity[];
   selectedMilitary(): SimUnitEntity[];
   unitsOfPlayer(pid: number): SimEntity[];
-  entityAt(x: number, y: number, r: number): SimEntity | undefined;
+  /** Entity (unit/nhà/tài nguyên) dưới con trỏ — bắt theo hình sprite. */
+  entityAt(x: number, y: number): SimEntity | undefined;
   getVision(pid: number): VisionMap | undefined;
   getProjectiles(): SimProjectile[];
 }

@@ -40,6 +40,8 @@ export interface MoveCommand {
 /** Lệnh tấn công mục tiêu. */
 export interface AttackCommand {
   type: 'attack';
+  /** Người gửi lệnh — có thì sim chỉ điều unit của người này (server luôn ép). */
+  playerId?: PlayerId;
   unitIds: EntityId[];
   targetId: EntityId;
 }
@@ -78,6 +80,8 @@ export interface BuildCommand {
   buildingId: string; // id trong BUILDINGS
   x: number;
   y: number;
+  /** Có → không dựng nhà mới: dân tới xây tiếp công trường đã có (click phải vào nhà đang xây). */
+  siteId?: EntityId;
 }
 
 /** Lệnh train unit / research tech tại một nhà. */

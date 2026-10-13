@@ -23,6 +23,7 @@ import { LocalGameController, type VisionMap } from './localGame';
 import { NetGameController } from './netGame';
 import type { GameController, HumanResState, SimEntity } from './entitySync';
 import { defIdOf } from './entitySync';
+import { boxTouches } from './picking';
 import { FogRenderer } from './fog';
 import {
   playAgeUpDrum, playSelect, playMoveOrder, playAttackOrder, playBuildOrder,
@@ -95,57 +96,100 @@ const BUILD_MENU = [
 ];
 
 /**
- * Phím xây nhanh kiểu AoE1 gốc: chọn dân → B → phím nhà.
- * Giữ đúng chữ cái gốc: E=House, F=Farm, T=Tower, B=Barracks, A=Archery,
- * L=Stable, N=Town Center, S=Storage Pit (+ G=Granary, W=Wall theo bản mở rộng).
+ * Phím xây kiểu AoE1: Rise of Rome — chọn dân → B → phím nhà (giữ đúng chữ cái gốc).
  */
 const BUILD_HOTKEYS: Record<string, string> = {
   e: 'house',
+  b: 'barracks',
+  g: 'granary',
+  s: 'storage_pit',
+  d: 'dock',
   f: 'farm',
   t: 'watch_tower',
+  w: 'small_wall',
+  a: 'archery_range',
+  l: 'stable',
+  m: 'market',
+  n: 'town_center',
+  c: 'government_center',
+  p: 'temple',
+  k: 'siege_workshop',
+  y: 'academy',
+  o: 'wonder',
+};
+/** Nhãn phím tắt in trên nút xây. */
+const BUILD_HOTKEY_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(BUILD_HOTKEYS).map(([k, id]) => [id, k.toUpperCase()]),
+);
+
+/** Phím huấn luyện khi đang chọn 1 nhà (kiểu RoR: C = tạo dân ở Đình làng...). */
+const TRAIN_HOTKEYS: Record<string, string> = {
+  villager_m: 'c',
+  villager_f: 'v',
+  clubman: 'c',
+  axeman: 'x',
+  slinger: 'l',
+  short_swordsman: 's',
+  hoplite: 'h',
+  phalanx: 'p',
+  centurion: 'n',
+  bowman: 'a',
+  improved_bowman: 'i',
+  horse_archer: 'h',
+  scout: 't',
+  cavalry: 'v',
+  war_elephant: 'e',
+  chariot: 'c',
+  stone_thrower: 'c',
+  catapult: 't',
+  ballista: 'b',
+  priest: 'p',
+  fishing_boat: 'f',
+  trade_boat: 't',
+  scout_ship: 's',
+  war_galley: 'w',
+};
+
+/** Ctrl + phím: chọn + nhảy camera tới nhà loại đó (bấm tiếp để xoay vòng) — kiểu RoR. */
+const GOTO_HOTKEYS: Record<string, string> = {
+  h: 'town_center',
+  n: 'town_center',
   b: 'barracks',
   a: 'archery_range',
   l: 'stable',
-  n: 'town_center',
-  s: 'storage_pit',
+  k: 'siege_workshop',
+  y: 'academy',
+  p: 'temple',
   g: 'granary',
-  w: 'small_wall',
-};
-/** Nhãn phím tắt in trên nút xây. */
-const BUILD_HOTKEY_LABELS: Record<string, string> = {
-  town_center: 'N',
-  house: 'E',
-  granary: 'G',
-  storage_pit: 'S',
-  farm: 'F',
-  barracks: 'B',
-  archery_range: 'A',
-  stable: 'L',
-  watch_tower: 'T',
-  small_wall: 'W',
+  s: 'storage_pit',
+  m: 'market',
+  d: 'dock',
+  c: 'government_center',
 };
 
 /** Bảng phím tắt hiển thị trong overlay F1 (tiếng Việt). */
 const HOTKEY_HELP: Array<[string, string]> = [
-  ['Chuột trái', 'Chọn 1 (kéo = chọn nhiều)'],
+  ['Chuột trái', 'Chọn 1 (kéo khung = chọn nhiều, Shift = cộng thêm)'],
   ['Shift + click', 'Thêm / bớt unit khỏi nhóm đang chọn'],
   ['Double-click', 'Chọn tất cả unit cùng loại trên màn hình'],
-  ['Chuột phải', 'Ra lệnh: đi / đánh / khai thác / xây'],
-  ['A', 'Tấn công-di chuyển'],
+  ['Chuột phải', 'Lệnh theo ngữ cảnh: đất = đi • địch = đánh • tài nguyên = khai thác • nhà đang xây = xây tiếp'],
   ['S', 'Dừng unit đang chọn'],
   ['Delete', 'Xóa unit / nhà đang chọn'],
   ['Ctrl + 1..9', 'Gán nhóm điều khiển'],
-  ['1..9', 'Chọn nhóm (bấm 2 lần: nhảy camera tới)'],
+  ['1..9', 'Chọn nhóm (bấm 2 lần hoặc Alt + số: nhảy camera tới)'],
   ['Shift + 1..9', 'Thêm nhóm vào lựa chọn hiện tại'],
-  ['H', 'Chọn Đình làng (bấm 2 lần: nhảy camera tới)'],
-  ['.', 'Nhảy tới dân nhàn rỗi tiếp theo'],
-  ['B rồi E/F/T/B/A/L/N/S/G/W', 'Xây nhanh: Nhà sàn / Ruộng lúa / Chòi canh / Trại lính / Trường bắn / Chuồng ngựa / Đình làng / Nhà kho / Kho thóc / Lũy đất'],
+  ['H', 'Tới Đình làng'],
+  ['Ctrl + B / A / L / K / Y / P', 'Tới Trại lính / Trường bắn / Chuồng ngựa / Xưởng / Võ đường / Đền'],
+  ['Ctrl + G / S / M / D / C', 'Tới Kho thóc / Nhà kho / Chợ / Bến nước / Dinh quan'],
+  ['.  và  ,', 'Dân nhàn rỗi tiếp theo  /  lính nhàn rỗi tiếp theo'],
+  ['B rồi phím nhà', 'E Nhà sàn • B Trại lính • G Kho thóc • S Nhà kho • F Ruộng • T Chòi canh • W Lũy • A Trường bắn • L Chuồng ngựa • N Đình làng • D Bến • M Chợ • P Đền • K Xưởng • Y Võ đường • C Dinh quan'],
+  ['Chọn nhà rồi bấm phím', 'Huấn luyện: phím ghi trên từng nút (vd Đình làng: C = Nông dân)'],
   ['Space', 'Đưa camera về chỗ đang chọn'],
   ['P / F3', 'Tạm dừng / tiếp tục'],
   ['Enter', 'Mở chat (chơi mạng)'],
   ['F1', 'Bảng phím tắt này'],
   ['ESC', 'Hủy chế độ / bỏ chọn'],
-  ['Mũi tên / chuột giữa / dí viền', 'Di chuyển camera'],
+  ['Giữ chuột phải kéo / mũi tên / chuột giữa / dí viền', 'Di chuyển camera'],
   ['Lăn chuột', 'Zoom'],
 ];
 
@@ -195,14 +239,6 @@ type SelInfo =
   | { kind: 'villager' }
   | { kind: 'building'; id: number; defId: string; hp: number; maxHp: number };
 
-function inBox(x: number, y: number, a: WorldPoint, b: WorldPoint): boolean {
-  const x0 = Math.min(a.x, b.x);
-  const x1 = Math.max(a.x, b.x);
-  const y0 = Math.min(a.y, b.y);
-  const y1 = Math.max(a.y, b.y);
-  return x >= x0 && x <= x1 && y >= y0 && y <= y1;
-}
-
 /** Hash string → number cho renderer.init (net mode nhận seed string từ server). */
 function hashSeed(s: string): number {
   let h = 2166136261;
@@ -248,7 +284,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
   const [selInfo, setSelInfo] = useState<SelInfo>({ kind: 'none' });
   const [placing, setPlacing] = useState<string | null>(null);
   const [attackMove, setAttackMove] = useState(false);
-  /** Có unit quân sự đang chọn → cho phép bật attack-move (phím A / nút HUD). */
+  /** Có unit quân sự đang chọn → cho phép bật attack-move (nút HUD). */
   const [canAttackMove, setCanAttackMove] = useState(false);
   /** Banner lên đời: {ageName, flavor, mine} — tự ẩn sau 6s. */
   const [ageBanner, setAgeBanner] = useState<{ ageName: string; flavor: string; mine: boolean } | null>(null);
@@ -267,11 +303,10 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
   const groupsRef = useRef<Map<number, number[]>>(new Map());
   /** Bấm phím số 2 lần liên tiếp → nhảy camera (450ms). */
   const lastDigitRef = useRef<{ d: string; t: number } | null>(null);
-  /** Bấm H 2 lần liên tiếp → nhảy camera tới Đình làng. */
-  const lastHRef = useRef(0);
-  /** Cycle Đình làng / dân nhàn rỗi khi bấm H / . nhiều lần. */
-  const tcIdxRef = useRef(0);
+  /** Cycle nhà theo loại (H / Ctrl+phím) và dân / lính nhàn rỗi (. / ,) khi bấm nhiều lần. */
+  const gotoIdxRef = useRef<Map<string, number>>(new Map());
   const idleVIdxRef = useRef(0);
+  const idleMIdxRef = useRef(0);
   /** Double-click: click 2 lần vào cùng entity trong 350ms. */
   const lastClickRef = useRef<{ id: number; t: number } | null>(null);
   /** Chế độ xây nhanh: đã bấm B, đang chờ phím nhà. */
@@ -351,6 +386,21 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
       n++;
     }
     if (n > 0) centerOn(sx / n, sy / n);
+  };
+  /** Chọn + nhảy camera tới nhà loại `defId` của mình; bấm tiếp để xoay vòng (kiểu RoR). */
+  const gotoBuilding = (defId: string): void => {
+    const c = controllerRef.current;
+    if (!c) return;
+    const list = [...c.entities.values()]
+      .filter((en) => en.kind === 'building' && en.playerId === c.humanPlayerId && defIdOf(en) === defId)
+      .sort((x, y) => x.id - y.id);
+    if (list.length === 0) return;
+    const idx = gotoIdxRef.current.get(defId) ?? 0;
+    gotoIdxRef.current.set(defId, idx + 1);
+    const b = list[idx % list.length]!;
+    c.selection.select(b.id);
+    playSelect();
+    centerOn(b.x, b.y);
   };
   /** Double-click (giống AoE): chọn tất cả unit cùng loại trên màn hình. */
   const selectSameTypeOnScreen = (e: SimEntity): void => {
@@ -447,8 +497,9 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
 
       // Nhóm điều khiển kiểu AoE: Ctrl+1..9 gán, Shift+1..9 cộng thêm,
       // 1..9 chọn (bấm 2 lần liên tiếp → nhảy camera tới).
-      if (/^[1-9]$/.test(key) && !e.repeat) {
-        const d = Number(key);
+      const digit = /^Digit[1-9]$/.test(e.code) ? e.code.slice(5) : '';
+      if (digit && !e.repeat) {
+        const d = Number(digit);
         if (e.ctrlKey || e.metaKey) {
           groupsRef.current.set(d, [...c.selection.selected]);
           e.preventDefault();
@@ -461,36 +512,59 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
           c.selection.selectBox(g);
           const now = performance.now();
           const last = lastDigitRef.current;
-          if (last && last.d === key && now - last.t < 450) centerOnIds(g);
-          lastDigitRef.current = { d: key, t: now };
+          if (e.altKey || (last && last.d === digit && now - last.t < 450)) centerOnIds(g);
+          lastDigitRef.current = { d: digit, t: now };
+          if (e.altKey) e.preventDefault();
         }
         return;
       }
 
-      // Các tổ hợp còn lại (Ctrl/Alt + phím) để dành cho trình duyệt.
+      // Ctrl + phím (kiểu RoR): tới nhà loại đó. Cmd/Alt + phím để dành cho trình duyệt.
+      if (e.ctrlKey && !e.metaKey && !e.altKey) {
+        const bid = GOTO_HOTKEYS[key];
+        if (bid) {
+          e.preventDefault();
+          if (!e.repeat) gotoBuilding(bid);
+        }
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+      // Đang chọn 1 nhà: phím huấn luyện của nhà đó (vd Đình làng: C = Nông dân).
+      const selB = c.selectedBuilding();
+      if (selB) {
+        const uid = BUILDINGS[defIdOf(selB)]?.trains.find((u) => TRAIN_HOTKEYS[u] === key);
+        if (uid) {
+          c.trainUnit(selB.id, uid);
+          return;
+        }
+      }
+
       switch (key) {
-        case 'a':
-          if (!e.repeat) enterAttackMove();
-          break;
         case 's':
           // Dừng unit đang chọn (giống AoE).
           if (!e.repeat) c.issueStop();
           break;
-        case 'h': {
-          // Chọn Đình làng (giống AoE: H) — bấm tiếp để cycle, 2 lần liên tiếp nhảy camera tới.
-          const tcs = [...c.entities.values()].filter(
-            (en) => en.kind === 'building' && en.playerId === me && defIdOf(en) === 'town_center',
-          );
-          if (tcs.length === 0) break;
-          const tc = tcs[tcIdxRef.current % tcs.length]!;
-          tcIdxRef.current += 1;
-          c.selection.select(tc.id);
+        case 'h':
+          if (!e.repeat) gotoBuilding('town_center');
+          break;
+        case ',': {
+          // Lính nhàn rỗi tiếp theo — cycle + nhảy camera tới.
+          const idles = [...c.entities.values()]
+            .filter(
+              (en) =>
+                en.kind === 'unit' &&
+                en.playerId === me &&
+                !isVillagerDef(defIdOf(en)) &&
+                (en as { state?: string }).state === 'idle',
+            )
+            .sort((x, y) => x.id - y.id);
+          if (idles.length === 0) break;
+          const u = idles[idleMIdxRef.current % idles.length]!;
+          idleMIdxRef.current += 1;
+          c.selection.select(u.id);
           playSelect();
-          const now = performance.now();
-          if (now - lastHRef.current < 450) centerOn(tc.x, tc.y);
-          lastHRef.current = now;
+          centerOn(u.x, u.y);
           break;
         }
         case '.': {
@@ -643,6 +717,26 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
       (controller as NetGameController).setMapSize(map.width, map.height);
     }
     const dragGfx = new PIXI.Graphics();
+    // Dấu xác nhận lệnh tại điểm click phải (vòng co lại ~0.45s, kiểu AoE).
+    const orderGfx = new PIXI.Graphics();
+    let order: { x: number; y: number; color: number; t: number } | null = null;
+    const flashOrder = (x: number, y: number, color: number): void => {
+      order = { x, y, color, t: 0 };
+    };
+    const drawOrder = (dt: number): void => {
+      if (!order) return;
+      order.t += dt;
+      orderGfx.clear();
+      const k = order.t / 0.45;
+      if (k >= 1) {
+        order = null;
+        return;
+      }
+      const z = renderer.camera.zoom;
+      orderGfx
+        .ellipse(order.x, order.y, (26 - 18 * k) / z, (15 - 10 * k) / z)
+        .stroke({ color: order.color, width: 3 / z, alpha: 1 - k * 0.6 });
+    };
     const ghostGfx = new PIXI.Graphics();
     ghostRef.current = ghostGfx;
 
@@ -703,6 +797,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
           (controller as LocalGameController).setup();
         }
         renderer.overlay.addChild(dragGfx);
+        renderer.overlay.addChild(orderGfx);
         renderer.overlay.addChild(ghostGfx);
         fog = new FogRenderer(renderer, map.width * TILE_SIZE, map.height * TILE_SIZE);
         refreshSelection();
@@ -713,6 +808,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
             const p = placingRef.current;
             if (p) drawGhost(p, w);
             else ghostGfx.clear();
+            controller.hoverId = p ? null : (controller.entityAt(w.x, w.y)?.id ?? null);
           },
           // Vẽ khung chọn trực tiếp trong lúc kéo (không vẽ khi đang đặt nhà / attack-move)
           onLeftDragMove: (a, b) => {
@@ -724,9 +820,12 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
             if (placingRef.current || attackMoveRef.current) return;
             const ids = controller
               .unitsOfPlayer(controller.humanPlayerId)
-              .filter((u) => inBox(u.x, u.y, a, b))
+              .filter((u) => u.hp > 0 && boxTouches(u, a, b))
               .map((u) => u.id);
-            controller.selection.selectBox(ids);
+            // Shift + kéo (giống AoE): cộng thêm vào nhóm đang chọn.
+            controller.selection.selectBox(
+              shiftRef.current ? [...controller.selection.selected, ...ids] : ids,
+            );
           },
           // Click trái: attack-move đang chờ → ra lệnh; đặt nhà → issueBuild; ngược lại chọn 1 unit/nhà
           onLeftClick: (w) => {
@@ -742,7 +841,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
               playBuildOrder();
               return; // giữ chế độ đặt để đặt tiếp nhiều nhà
             }
-            const e = controller.entityAt(w.x, w.y, 40);
+            const e = controller.entityAt(w.x, w.y);
             if (
               e &&
               e.playerId === controller.humanPlayerId &&
@@ -786,22 +885,41 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
               ghostGfx.clear();
               return;
             }
-            // Phase 7: click phải vào tài nguyên → dân đi khai thác (trước đây client chưa từng gửi gather!).
-            const target = controller.entityAt(w.x, w.y, 40);
-            if (
-              target &&
-              target.kind === 'resource' &&
-              controller.selectedVillagers().length > 0
-            ) {
+            if (controller.selection.count === 0) return;
+            // Lệnh theo ngữ cảnh kiểu AoE: địch → đánh; tài nguyên → khai thác;
+            // nhà đang xây của mình → xây tiếp; còn lại → đi.
+            const me = controller.humanPlayerId;
+            const target = controller.entityAt(w.x, w.y);
+            if (target && target.kind !== 'resource' && target.playerId !== me) {
+              controller.issueAttack(target.id);
+              playAttackOrder();
+              flashOrder(target.x, target.y, 0xff4d3d);
+              return;
+            }
+            if (target && target.kind === 'resource' && controller.selectedVillagers().length > 0) {
               const rdef = RESOURCES[defIdOf(target)];
               if (rdef) {
                 controller.issueGather(target.id, rdef.resource);
                 playGatherOrder();
+                flashOrder(target.x, target.y, 0xffd54a);
                 return;
               }
             }
+            if (
+              target &&
+              target.kind === 'building' &&
+              target.playerId === me &&
+              (target as { complete?: boolean }).complete === false &&
+              controller.selectedVillagers().length > 0
+            ) {
+              controller.issueBuildSite(target.id);
+              playBuildOrder();
+              flashOrder(target.x, target.y, 0xffd54a);
+              return;
+            }
             controller.issueMove(w.x, w.y);
             playMoveOrder();
+            flashOrder(w.x, w.y, 0x35e05a);
           },
         });
 
@@ -819,6 +937,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
           controller.stepAccum(dt);
           controller.beforeRender?.(); // net: nội suy snapshot; local: no-op
           controller.syncToRenderer(renderer);
+          drawOrder(dt);
           // Banner + trống đồng khi có ageUp (phe mình to, phe địch nhỏ)
           for (const au of controller.drainAgeUpEvents()) {
             const mine = au.playerId === controller.humanPlayerId;
@@ -1196,7 +1315,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
             title="Phím tắt: A"
             onClick={() => (attackMove ? cancelAttackMove() : enterAttackMove())}
           >
-            ⚔ Tấn công (A)
+            ⚔ Tấn công-di chuyển
           </button>
         )}
         {isNet && (
@@ -1285,7 +1404,14 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
                     title={formatCost(udef.cost)}
                     className="rounded bg-tre px-2 py-1.5 text-left text-xs text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <div className="font-semibold leading-4">{udef.vnName}</div>
+                    <div className="font-semibold leading-4">
+                      {udef.vnName}
+                      {TRAIN_HOTKEYS[uid] && (
+                        <span className="ml-1 rounded bg-black/40 px-1 text-[10px] text-rom">
+                          {TRAIN_HOTKEYS[uid].toUpperCase()}
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-0.5 text-[10px] leading-3 text-amber-100/70">
                       {formatCost(udef.cost)} • {udef.trainTime}s
                     </div>
@@ -1387,13 +1513,9 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         </div>
       )}
 
-      {/* Hướng dẫn điều khiển */}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-30 rounded bg-black/60 px-3 py-2 text-[11px] leading-5 text-amber-100/80">
-        <div className="font-bold text-rom">Điều khiển kiểu AoE <span className="font-normal text-amber-100/60">(F1: bảng đầy đủ)</span></div>
-        <div>1..9 chọn nhóm (Ctrl+1..9 gán) • H: Đình làng • . : dân nhàn rỗi • B rồi phím nhà: xây nhanh</div>
-        <div>Click trái chọn (kéo: nhiều) • Shift+click: thêm/bớt • Double-click: chọn cùng loại • Click phải: ra lệnh</div>
-        <div>A: tấn công-di chuyển • S: dừng • Delete: xóa • Space: về chỗ chọn • P/F3: tạm dừng • ESC: hủy</div>
-        <div>Mũi tên / chuột giữa kéo / dí viền: camera • Lăn chuột: zoom • Click minimap: nhảy camera</div>
+      {/* Hướng dẫn điều khiển — 1 dòng, bảng đầy đủ ở F1 (trước đây 4 dòng đè lên bảng nhà / bảng xây) */}
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded bg-black/60 px-3 py-1.5 text-[11px] text-amber-100/80">
+        <span className="font-bold text-rom">F1</span>: bảng phím tắt • Chuột phải: ra lệnh (giữ + kéo: kéo map)
       </div>
     </div>
   );

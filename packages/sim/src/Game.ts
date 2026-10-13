@@ -514,6 +514,14 @@ export class Game {
    * (progress=0) → dân tới xây, mỗi dân cộng BUILD_RATE tiến độ/giây.
    */
   private applyBuild(cmd: BuildCommand): void {
+    if (cmd.siteId !== undefined) {
+      // Xây tiếp công trường có sẵn của mình: không trừ tiền, chỉ điều dân tới.
+      const site = this.entities.get(cmd.siteId);
+      if (!site || site.kind !== 'building') return;
+      if (site.playerId !== cmd.playerId || site.complete) return;
+      this.sendBuilders(cmd, site.id, site.x, site.y);
+      return;
+    }
     const def = BUILDINGS[cmd.buildingId];
     if (!def) return;
     const p = this.players[cmd.playerId];
@@ -538,16 +546,21 @@ export class Game {
       researchQueue: [],
     };
     this.entities.set(id, b);
+    this.sendBuilders(cmd, id, cmd.x, cmd.y);
+  }
+
+  /** Điều các dân hợp lệ trong lệnh tới xây công trường `siteId` tại (x, y). */
+  private sendBuilders(cmd: BuildCommand, siteId: number, x: number, y: number): void {
     for (const uid of cmd.unitIds) {
       const e = this.entities.get(uid);
       if (!e || e.kind !== 'unit') continue;
       if (e.playerId !== cmd.playerId) continue;
       if (e.hp <= 0) continue;
       if (!isVillagerDef(e.defId)) continue; // chỉ dân mới xây
-      e.buildTargetId = id;
+      e.buildTargetId = siteId;
       e.targetNodeId = null; // build hủy nhiệm vụ gather
       this.returnTargets.delete(uid);
-      this.orderMove(e, cmd.x, cmd.y, 'moving');
+      this.orderMove(e, x, y, 'moving');
     }
   }
 
