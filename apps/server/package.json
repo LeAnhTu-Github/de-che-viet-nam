@@ -1,0 +1,23 @@
+{
+  "dependencies": {
+    "@aoe-vn/protocol": "workspace:*",
+    "@aoe-vn/sim": "workspace:*",
+    "colyseus": "^0.16.5",
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  },
+  "description": "Game server Đế Chế Việt Nam — Colyseus authoritative sim",
+  "name": "@aoe-vn/server",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "version": "0.1.0",
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "tsx": "^4.19.2",
+    "colyseus.js": "^0.16.0"
+  }
+}

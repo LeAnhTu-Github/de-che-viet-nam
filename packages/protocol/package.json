@@ -1,0 +1,14 @@
+{
+  "description": "Định nghĩa message client<->server dùng chung",
+  "main": "dist/index.js",
+  "name": "@aoe-vn/protocol",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "types": "dist/index.d.ts",
+  "version": "0.1.0",
+  "dependencies": {
+    "@aoe-vn/sim": "workspace:*"
+  }
+}

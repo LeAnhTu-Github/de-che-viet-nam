@@ -1,0 +1,20 @@
+{
+  "description": "Đế Chế Việt Nam — game RTS web clone AoE1, theme Việt (Phase 0: khung monorepo)",
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3"
+  },
+  "name": "aoe-vn",
+  "packageManager": "pnpm@10.14.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "concurrently -n client,server -c blue,green \"pnpm --filter @aoe-vn/client dev\" \"pnpm --filter @aoe-vn/server dev\""
+  },
+  "version": "0.1.0",
+  "pnpm": {
+    "overrides": {
+      "rollup": "4.64.5"
+    }
+  }
+}

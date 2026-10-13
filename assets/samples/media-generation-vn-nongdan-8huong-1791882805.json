@@ -1,0 +1,4 @@
+{
+  "text": "{\"error_format_version\":1,\"error\":{\"code\":\"internal\",\"retryable\":false,\"detail\":\"An unexpected error occurred.\",\"downstream_status\":500,\"attempt_id\":\"760a5814-f33c-41ce-b7d7-5fa47f467ed7\",\"origin_stage\":\"safety\",\"root_cause_known\":true,\"fallback_emitted\":true,\"source_error_code\":\"server_error\",\"failure_kind\":\"safety_service_unavailable\",\"source_retryable\":false,\"downstream_request_id\":\"760a5814-f33c-41ce-b7d7-5fa47f467ed7\",\"generated_attachment_count\":0}}",
+  "attachments": []
+}
