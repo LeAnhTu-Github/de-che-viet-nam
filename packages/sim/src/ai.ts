@@ -21,9 +21,9 @@ interface DifficultyParam {
 }
 
 const PARAMS: Record<AIDifficulty, DifficultyParam> = {
-  de: { interval: 80, attackAt: 25, maxVillagers: 14 },
-  trungbinh: { interval: 40, attackAt: 15, maxVillagers: 18 },
-  kho: { interval: 30, attackAt: 12, maxVillagers: 22 },
+  de: { interval: 80, attackAt: 12, maxVillagers: 10 },
+  trungbinh: { interval: 40, attackAt: 10, maxVillagers: 12 },
+  kho: { interval: 30, attackAt: 8, maxVillagers: 14 },
 };
 
 /** Tên hiển thị + ghi chú cheat minh bạch. */
@@ -80,11 +80,17 @@ export class RuleAI {
     // 1. Train dân — ưu tiên cao nhất.
     // Thời đá: giữ tối đa 8 dân + dành dụm thịt (không train khi thịt ≥ 400)
     // để lên đời càng sớm càng tốt.
+    // Từ tool: "súng trước bơ" — nhà quân sự đang rảnh và chưa đủ quân tấn công
+    // thì nhường thịt cho train lính, không train dân.
     const villCap = p.age === 'stone' ? 8 : this.params.maxVillagers;
     const reservingFood = p.age === 'stone' && p.resources.food >= 400;
+    const queuedVills = tc?.trainQueue.length ?? 1;
+    const villCost = UNITS['villager_m']?.cost?.food ?? 50;
+    const gunsFirst = this.needsMilitary(buildings, military);
     if (
-      tc && tc.trainQueue.length === 0 &&
-      villagers.length < villCap && p.pop < p.popCap && !reservingFood
+      tc && queuedVills === 0 &&
+      villagers.length < villCap && p.pop < p.popCap &&
+      !reservingFood && !gunsFirst && p.resources.food >= villCost
     ) {
       const defId = game.rng.float() < 0.5 ? 'villager_m' : 'villager_f';
       game.addCommand({ type: 'train', playerId: pid, buildingId: tc.id, unitDefId: defId });
@@ -115,6 +121,21 @@ export class RuleAI {
   }
 
   // ----------------------------------------------------------
+
+  /**
+   * true khi cần ưu tiên train quân thay vì dân: chưa đủ quân để tấn công
+   * mà đã có nhà quân sự đang rảnh.
+   */
+  private needsMilitary(buildings: BuildingEntity[], military: UnitEntity[]): boolean {
+    if (military.length >= this.params.attackAt) return false;
+    return buildings.some(
+      (b) =>
+        b.complete &&
+        b.defId !== 'town_center' &&
+        (BUILDINGS[b.defId]?.trains.length ?? 0) > 0 &&
+        b.trainQueue.length === 0,
+    );
+  }
 
   private tryAgeUp(game: Game, pid: number, tc: BuildingEntity): boolean {
     const p = game.players[pid]!;
@@ -157,8 +178,14 @@ export class RuleAI {
       return false;
     });
     if (needy.length === 0) return;
-    // Tỉ lệ 40% gỗ / 30% thịt / 20% vàng / 10% đá — quay vòng theo id để ổn định.
-    const plan: ResourceType[] = ['wood', 'wood', 'wood', 'wood', 'food', 'food', 'food', 'gold', 'gold', 'stone'];
+    // Tỉ lệ khai thác theo thời (học từ AI thắng trong aiwar.test.ts: ít dân, dồn thịt):
+    // - Thời đá: DỒN THỊT để lên đời sớm (60% thịt / 20% gỗ / 10% vàng / 10% đá).
+    // - Từ tool: 50% thịt / 20% gỗ / 15% đá (cần đá cho slinger) / 15% vàng.
+    const p = game.players[pid]!;
+    const stone = p.age === 'stone';
+    const plan: ResourceType[] = stone
+      ? ['food', 'food', 'food', 'food', 'food', 'food', 'wood', 'wood', 'gold', 'stone']
+      : ['food', 'food', 'food', 'food', 'food', 'wood', 'wood', 'stone', 'gold', 'food'];
     const sorted = [...needy].sort((a, b) => a.id - b.id);
     sorted.forEach((v, i) => {
       const rt = plan[(v.id + i) % plan.length]!;
@@ -246,16 +273,24 @@ export class RuleAI {
     const p = game.players[pid]!;
     for (const b of buildings) {
       if (!b.complete || b.trainQueue.length >= 2) continue;
+      // Đình làng do khối train dân riêng quản lý (tránh double-train).
+      if (b.defId === 'town_center') continue;
       const def = BUILDINGS[b.defId];
       if (!def) continue;
       // Chọn unit rẻ nhất có attack > 0 mà thời hiện tại cho phép.
+      // Ưu tiên slinger (lính ném đá: rẻ, đánh xa) như chiến thuật rush đã thắng trong aiwar.test.ts.
       const options = def.trains
         .map((id) => UNITS[id])
         .filter((u) => u && (u.attack ?? 0) > 0 && this.ageOk(p.age, u.age));
       if (options.length === 0) continue;
-      options.sort((a, b) => this.totalCost(a!.cost) - this.totalCost(b!.cost));
+      options.sort((a, b) => {
+        const sa = a!.id === 'slinger' ? -1000 : 0;
+        const sb = b!.id === 'slinger' ? -1000 : 0;
+        return sa - sb || this.totalCost(a!.cost) - this.totalCost(b!.cost);
+      });
       const pick = options[0]!;
       if (p.pop + (pick.popCost ?? 1) > p.popCap) continue;
+      if (!this.canAfford(p, pick.cost)) continue; // chưa đủ tiền → đợi, không spam lệnh
       game.addCommand({ type: 'train', playerId: pid, buildingId: b.id, unitDefId: pick.id });
       return; // mỗi lượt 1 lệnh train
     }

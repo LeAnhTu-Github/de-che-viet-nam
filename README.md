@@ -23,8 +23,8 @@ corepack enable
 corepack prepare pnpm@latest --activate
 pnpm --version   # kiểm tra
 
-# 3. Cài dependencies (chạy trong thư mục aoe-web):
-cd aoe-web
+# 3. Cài dependencies (chạy trong thư mục de-che-viet-nam):
+cd de-che-viet-nam
 pnpm install
 
 # 4. Chạy dev (client + server cùng lúc):
