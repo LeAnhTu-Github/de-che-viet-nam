@@ -119,6 +119,20 @@ export interface SimGatherCommand {
   resource: ResourceType;
 }
 
+/** Lệnh stop — phím S (giống AoE): unit đứng yên, hủy nhiệm vụ. */
+export interface SimStopCommand {
+  type: 'stop';
+  playerId: number;
+  unitIds: number[];
+}
+
+/** Lệnh delete — phím Delete (giống AoE): phá unit/nhà của chính mình. */
+export interface SimDeleteCommand {
+  type: 'delete';
+  playerId: number;
+  unitIds: number[];
+}
+
 /** Mọi lệnh client gửi xuống sim. */
 export type SimCommand =
   | SimMoveCommand
@@ -126,7 +140,9 @@ export type SimCommand =
   | SimBuildCommand
   | SimAttackMoveCommand
   | SimResearchCommand
-  | SimGatherCommand;
+  | SimGatherCommand
+  | SimStopCommand
+  | SimDeleteCommand;
 
 /** Projectile của sim (đạn bay) — x/y tính bằng world px. */
 export interface SimProjectile {
@@ -288,6 +304,7 @@ export class LocalGameController {
    * chạy game.update() đúng nhịp 20 tick/s.
    */
   stepAccum(dtReal: number): void {
+    if (this.paused) return; // phím P/F3: dừng sim local
     this.accum += Math.min(dtReal, 0.25);
     let n = 0;
     while (this.accum >= TICK_DT && n < 5) {
@@ -427,6 +444,28 @@ export class LocalGameController {
     if (ids.length === 0) return;
     this.game.addCommand({ type: 'gather', playerId: this.humanPlayerId, unitIds: ids, targetId, resource });
   }
+
+  /** Ra lệnh dừng (phím S): các unit đang chọn của phe người đứng yên, hủy nhiệm vụ. */
+  issueStop(): void {
+    const owned = new Set(this.unitsOfPlayer(this.humanPlayerId).map((u) => u.id));
+    const ids = [...this.selection.selected].filter((id) => owned.has(id));
+    if (ids.length === 0) return;
+    this.game.addCommand({ type: 'stop', playerId: this.humanPlayerId, unitIds: ids });
+  }
+
+  /** Ra lệnh xóa (phím Delete): phá unit/nhà đang chọn của phe người. */
+  issueDelete(): void {
+    const ids = [...this.selection.selected].filter((id) => {
+      const e = this.game.entities.get(id);
+      return !!e && e.playerId === this.humanPlayerId && (e.kind === 'unit' || e.kind === 'building');
+    });
+    if (ids.length === 0) return;
+    this.game.addCommand({ type: 'delete', playerId: this.humanPlayerId, unitIds: ids });
+    this.selection.clear();
+  }
+
+  /** Tạm dừng sim local (phím P/F3) — stepAccum bỏ qua khi paused. */
+  paused = false;
 
   /** Ra lệnh research tech tại nhà (entity id) theo interface chốt của sim. */
   issueResearch(buildingId: number, techId: string): void {

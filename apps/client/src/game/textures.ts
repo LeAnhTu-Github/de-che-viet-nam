@@ -5,6 +5,7 @@
 import * as PIXI from 'pixi.js';
 import { TILE_SIZE, type TerrainKind } from './map';
 import { mulberry32 } from './map';
+import { resolveTile } from './spriteManager';
 
 const cache = new Map<TerrainKind, PIXI.Texture>();
 
@@ -83,15 +84,22 @@ export function getTileTextures(renderer: PIXI.Renderer): Record<TerrainKind, PI
   for (const kind of kinds) {
     let tex = cache.get(kind);
     if (!tex) {
-      const g = new PIXI.Graphics();
-      drawTile(g, kind);
-      tex = renderer.generateTexture({ target: g });
-      g.destroy();
+      // Ưu tiên sprite PNG thật; thiếu → fallback vẽ bằng code như cũ
+      tex = resolveTile(kind) ?? makeGeneratedTile(renderer, kind);
       cache.set(kind, tex);
     }
     out[kind] = tex;
   }
   return out;
+}
+
+/** Tile vẽ bằng code (fallback khi thiếu file PNG). */
+function makeGeneratedTile(renderer: PIXI.Renderer, kind: TerrainKind): PIXI.Texture {
+  const g = new PIXI.Graphics();
+  drawTile(g, kind);
+  const tex = renderer.generateTexture({ target: g });
+  g.destroy();
+  return tex;
 }
 
 export function destroyTileTextures(): void {

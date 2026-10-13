@@ -21,7 +21,7 @@ import { TILE_SIZE } from './map';
 import { createRealMap } from './simMapAdapter';
 import { LocalGameController, type VisionMap } from './localGame';
 import { NetGameController } from './netGame';
-import type { GameController, HumanResState } from './entitySync';
+import type { GameController, HumanResState, SimEntity } from './entitySync';
 import { defIdOf } from './entitySync';
 import { FogRenderer } from './fog';
 import {
@@ -92,6 +92,61 @@ const BUILD_MENU = [
   'stable', // Chuồng ngựa
   'watch_tower', // Chòi canh
   'small_wall', // Lũy đất
+];
+
+/**
+ * Phím xây nhanh kiểu AoE1 gốc: chọn dân → B → phím nhà.
+ * Giữ đúng chữ cái gốc: E=House, F=Farm, T=Tower, B=Barracks, A=Archery,
+ * L=Stable, N=Town Center, S=Storage Pit (+ G=Granary, W=Wall theo bản mở rộng).
+ */
+const BUILD_HOTKEYS: Record<string, string> = {
+  e: 'house',
+  f: 'farm',
+  t: 'watch_tower',
+  b: 'barracks',
+  a: 'archery_range',
+  l: 'stable',
+  n: 'town_center',
+  s: 'storage_pit',
+  g: 'granary',
+  w: 'small_wall',
+};
+/** Nhãn phím tắt in trên nút xây. */
+const BUILD_HOTKEY_LABELS: Record<string, string> = {
+  town_center: 'N',
+  house: 'E',
+  granary: 'G',
+  storage_pit: 'S',
+  farm: 'F',
+  barracks: 'B',
+  archery_range: 'A',
+  stable: 'L',
+  watch_tower: 'T',
+  small_wall: 'W',
+};
+
+/** Bảng phím tắt hiển thị trong overlay F1 (tiếng Việt). */
+const HOTKEY_HELP: Array<[string, string]> = [
+  ['Chuột trái', 'Chọn 1 (kéo = chọn nhiều)'],
+  ['Shift + click', 'Thêm / bớt unit khỏi nhóm đang chọn'],
+  ['Double-click', 'Chọn tất cả unit cùng loại trên màn hình'],
+  ['Chuột phải', 'Ra lệnh: đi / đánh / khai thác / xây'],
+  ['A', 'Tấn công-di chuyển'],
+  ['S', 'Dừng unit đang chọn'],
+  ['Delete', 'Xóa unit / nhà đang chọn'],
+  ['Ctrl + 1..9', 'Gán nhóm điều khiển'],
+  ['1..9', 'Chọn nhóm (bấm 2 lần: nhảy camera tới)'],
+  ['Shift + 1..9', 'Thêm nhóm vào lựa chọn hiện tại'],
+  ['H', 'Chọn Đình làng (bấm 2 lần: nhảy camera tới)'],
+  ['.', 'Nhảy tới dân nhàn rỗi tiếp theo'],
+  ['B rồi E/F/T/B/A/L/N/S/G/W', 'Xây nhanh: Nhà sàn / Ruộng lúa / Chòi canh / Trại lính / Trường bắn / Chuồng ngựa / Đình làng / Nhà kho / Kho thóc / Lũy đất'],
+  ['Space', 'Đưa camera về chỗ đang chọn'],
+  ['P / F3', 'Tạm dừng / tiếp tục'],
+  ['Enter', 'Mở chat (chơi mạng)'],
+  ['F1', 'Bảng phím tắt này'],
+  ['ESC', 'Hủy chế độ / bỏ chọn'],
+  ['Mũi tên / chuột giữa / dí viền', 'Di chuyển camera'],
+  ['Lăn chuột', 'Zoom'],
 ];
 
 const RES_ICON: Record<ResourceType, string> = {
@@ -205,6 +260,30 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const bannerTimer = useRef<number | null>(null);
+  // ── Phím tắt kiểu AoE (worker controls) ──
+  /** Renderer để phím tắt đọc camera (centerOn/viewBounds). */
+  const rendererRef = useRef<GameRenderer | null>(null);
+  /** Nhóm điều khiển 1..9 → danh sách entity id. */
+  const groupsRef = useRef<Map<number, number[]>>(new Map());
+  /** Bấm phím số 2 lần liên tiếp → nhảy camera (450ms). */
+  const lastDigitRef = useRef<{ d: string; t: number } | null>(null);
+  /** Bấm H 2 lần liên tiếp → nhảy camera tới Đình làng. */
+  const lastHRef = useRef(0);
+  /** Cycle Đình làng / dân nhàn rỗi khi bấm H / . nhiều lần. */
+  const tcIdxRef = useRef(0);
+  const idleVIdxRef = useRef(0);
+  /** Double-click: click 2 lần vào cùng entity trong 350ms. */
+  const lastClickRef = useRef<{ id: number; t: number } | null>(null);
+  /** Chế độ xây nhanh: đã bấm B, đang chờ phím nhà. */
+  const buildKeyRef = useRef(false);
+  const [buildKeyMode, setBuildKeyMode] = useState(false);
+  /** Shift đang giữ (cho Shift+click). */
+  const shiftRef = useRef(false);
+  /** Mirror của state paused cho handler phím. */
+  const pausedRef = useRef(false);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  /** Overlay bảng phím tắt (F1). */
+  const [showHelp, setShowHelp] = useState(false);
   // ── State riêng Phase 7 ──
   /** Độ khó AI máy (local mode): 'trungbinh' mặc định, 'off' = sandbox, tutorial → off. */
   const [aiDiff, setAiDiff] = useState<AiChoice>(tutorial ? 'off' : 'trungbinh');
@@ -228,6 +307,8 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
   };
 
   const startPlacement = (defId: string): void => {
+    buildKeyRef.current = false;
+    setBuildKeyMode(false);
     placingRef.current = defId;
     setPlacing(defId);
   };
@@ -250,6 +331,58 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
     setAttackMove(false);
   };
 
+  // ── Helpers phím tắt kiểu AoE ──
+  /** Đưa camera tới world (x, y). */
+  const centerOn = (x: number, y: number): void => {
+    rendererRef.current?.camera.centerOn(x, y);
+  };
+  /** Đưa camera tới trọng tâm danh sách entity id. */
+  const centerOnIds = (ids: number[]): void => {
+    const c = controllerRef.current;
+    if (!c || ids.length === 0) return;
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const id of ids) {
+      const e = c.entities.get(id);
+      if (!e) continue;
+      sx += e.x;
+      sy += e.y;
+      n++;
+    }
+    if (n > 0) centerOn(sx / n, sy / n);
+  };
+  /** Double-click (giống AoE): chọn tất cả unit cùng loại trên màn hình. */
+  const selectSameTypeOnScreen = (e: SimEntity): void => {
+    const c = controllerRef.current;
+    const cam = rendererRef.current?.camera;
+    if (!c || !cam) return;
+    const vb = cam.viewBounds();
+    const did = defIdOf(e);
+    const ids: number[] = [];
+    for (const en of c.entities.values()) {
+      if (en.kind !== 'unit' || en.playerId !== c.humanPlayerId) continue;
+      if (defIdOf(en) !== did) continue;
+      if (en.x < vb.left || en.x > vb.right || en.y < vb.top || en.y > vb.bottom) continue;
+      ids.push(en.id);
+    }
+    c.selection.selectBox(ids);
+    playSelect();
+  };
+  /** P / F3: tạm dừng — local dừng sim, net gửi yêu cầu lên server. */
+  const togglePause = (): void => {
+    if (isNet) {
+      netRef.current?.sendPause(!pausedRef.current);
+      return; // server broadcast 'paused'/'resumed' → onPaused cập nhật UI
+    }
+    const c = controllerRef.current;
+    if (c instanceof LocalGameController) {
+      c.paused = !c.paused;
+      pausedRef.current = c.paused;
+      setPaused(c.paused);
+    }
+  };
+
   /** Thoát trận: net → rời phòng; local → như cũ. */
   const handleExit = (): void => {
     setScreen('menu');
@@ -262,23 +395,167 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
     setChatInput('');
   };
 
-  // Phím tắt: A = attack-move, ESC = hủy chế độ đặt nhà / attack-move.
+  // Phím tắt kiểu AoE1: Rise of Rome (giữ UI tiếng Việt).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      // Đang gõ trong input (chat, lobby...) → bỏ qua phím tắt game.
+      // Đang gõ trong input/select/textarea (chat, lobby...) → bỏ qua phím tắt game.
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+      // Theo dõi Shift cho Shift+click.
+      if (e.key === 'Shift') {
+        shiftRef.current = true;
+        return;
+      }
+      // F1: bảng trợ giúp (mọi lúc).
+      if (e.key === 'F1') {
+        e.preventDefault();
+        setShowHelp((v) => !v);
+        return;
+      }
+      const c = controllerRef.current;
+      if (!c) return;
+      const me = c.humanPlayerId;
+      const key = e.key.toLowerCase();
+
       if (e.key === 'Escape') {
+        if (showHelp) {
+          setShowHelp(false);
+          return;
+        }
+        if (buildKeyRef.current) {
+          buildKeyRef.current = false;
+          setBuildKeyMode(false);
+          return;
+        }
         cancelPlacement();
         cancelAttackMove();
-      } else if ((e.key === 'a' || e.key === 'A') && !e.repeat) {
-        enterAttackMove();
+        c.selection.clear();
+        return;
+      }
+
+      // Chế độ xây nhanh (đã bấm B): chỉ nhận phím nhà kiểu AoE.
+      if (buildKeyRef.current) {
+        const bid = BUILD_HOTKEYS[key];
+        if (bid && !e.ctrlKey && !e.metaKey && !e.repeat) {
+          buildKeyRef.current = false;
+          setBuildKeyMode(false);
+          startPlacement(bid);
+          playBuildOrder();
+        }
+        return;
+      }
+
+      // Nhóm điều khiển kiểu AoE: Ctrl+1..9 gán, Shift+1..9 cộng thêm,
+      // 1..9 chọn (bấm 2 lần liên tiếp → nhảy camera tới).
+      if (/^[1-9]$/.test(key) && !e.repeat) {
+        const d = Number(key);
+        if (e.ctrlKey || e.metaKey) {
+          groupsRef.current.set(d, [...c.selection.selected]);
+          e.preventDefault();
+        } else if (e.shiftKey) {
+          for (const id of groupsRef.current.get(d) ?? []) {
+            if (c.entities.has(id)) c.selection.select(id, true);
+          }
+        } else {
+          const g = (groupsRef.current.get(d) ?? []).filter((id) => c.entities.has(id));
+          c.selection.selectBox(g);
+          const now = performance.now();
+          const last = lastDigitRef.current;
+          if (last && last.d === key && now - last.t < 450) centerOnIds(g);
+          lastDigitRef.current = { d: key, t: now };
+        }
+        return;
+      }
+
+      // Các tổ hợp còn lại (Ctrl/Alt + phím) để dành cho trình duyệt.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      switch (key) {
+        case 'a':
+          if (!e.repeat) enterAttackMove();
+          break;
+        case 's':
+          // Dừng unit đang chọn (giống AoE).
+          if (!e.repeat) c.issueStop();
+          break;
+        case 'h': {
+          // Chọn Đình làng (giống AoE: H) — bấm tiếp để cycle, 2 lần liên tiếp nhảy camera tới.
+          const tcs = [...c.entities.values()].filter(
+            (en) => en.kind === 'building' && en.playerId === me && defIdOf(en) === 'town_center',
+          );
+          if (tcs.length === 0) break;
+          const tc = tcs[tcIdxRef.current % tcs.length]!;
+          tcIdxRef.current += 1;
+          c.selection.select(tc.id);
+          playSelect();
+          const now = performance.now();
+          if (now - lastHRef.current < 450) centerOn(tc.x, tc.y);
+          lastHRef.current = now;
+          break;
+        }
+        case '.': {
+          // Dân nhàn rỗi tiếp theo (giống AoE: .) — cycle + nhảy camera tới.
+          const idles = [...c.entities.values()]
+            .filter(
+              (en) =>
+                en.kind === 'unit' &&
+                en.playerId === me &&
+                isVillagerDef(defIdOf(en)) &&
+                (en as { state?: string }).state === 'idle',
+            )
+            .sort((x, y) => x.id - y.id);
+          if (idles.length === 0) break;
+          const v = idles[idleVIdxRef.current % idles.length]!;
+          idleVIdxRef.current += 1;
+          c.selection.select(v.id);
+          playSelect();
+          centerOn(v.x, v.y);
+          break;
+        }
+        case 'b':
+          // Menu xây nhanh kiểu AoE: B rồi phím nhà (cần đang chọn dân).
+          if (!e.repeat && c.selectedVillagers().length > 0) {
+            cancelPlacement();
+            cancelAttackMove();
+            buildKeyRef.current = true;
+            setBuildKeyMode(true);
+          }
+          break;
+        case ' ':
+          // Đưa camera về chỗ đang chọn (giống AoE: Space).
+          e.preventDefault();
+          centerOnIds([...c.selection.selected]);
+          break;
+        case 'delete':
+        case 'backspace':
+          // Xóa unit/nhà đang chọn (giống AoE: Delete).
+          e.preventDefault();
+          c.issueDelete();
+          break;
+        case 'p':
+        case 'f3':
+          if (!e.repeat) togglePause();
+          break;
+        case 'enter':
+          // Mở chat (chơi mạng).
+          if (isNet) {
+            setChatOpen(true);
+            window.setTimeout(() => chatInputRef.current?.focus(), 50);
+          }
+          break;
       }
     };
+    const onKeyUp = (ev: KeyboardEvent): void => {
+      if (ev.key === 'Shift') shiftRef.current = false;
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isNet, showHelp]);
 
   // Con trỏ crosshair khi ở chế độ attack-move.
   useEffect(() => {
@@ -326,7 +603,10 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         setSeed(info.seed);
         setNetStatus(`Trận net • mã ${shortRoomCode(room.roomId)} • phe ${info.myPid}`);
       },
-      onPaused: (p) => setPaused(p),
+      onPaused: (p) => {
+        pausedRef.current = p;
+        setPaused(p);
+      },
       onGameOver: (winner) => {
         gameOverRef.current = winner;
         const won = winner === (netRef.current?.humanPlayerId ?? -1);
@@ -353,6 +633,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
     let raf = 0;
     let fog: FogRenderer | null = null;
     const renderer = new GameRenderer(host);
+    rendererRef.current = renderer;
     const controller: GameController = isNet
       ? (netRef.current as NetGameController)
       : new LocalGameController(String(seed));
@@ -467,16 +748,36 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
               e.playerId === controller.humanPlayerId &&
               (e.kind === 'unit' || e.kind === 'building')
             ) {
+              // Shift+click (giống AoE): thêm/bớt khỏi nhóm đang chọn.
+              if (shiftRef.current) {
+                controller.selection.toggle(e.id);
+                return;
+              }
+              // Double-click (giống AoE): chọn tất cả unit cùng loại trên màn hình.
+              const now = performance.now();
+              const last = lastClickRef.current;
+              if (last && last.id === e.id && now - last.t < 350) {
+                lastClickRef.current = null;
+                selectSameTypeOnScreen(e);
+                return;
+              }
+              lastClickRef.current = { id: e.id, t: now };
               controller.selection.select(e.id);
             } else {
               controller.selection.clear();
+              lastClickRef.current = null;
             }
           },
-          // Chuột phải: attack-move đang chờ → hủy; đặt nhà → hủy;
+          // Chuột phải: attack-move đang chờ → hủy; đặt nhà → hủy; xây nhanh → hủy;
           // click vào node tài nguyên → dân khai thác; ngược lại ra lệnh di chuyển
           onRightClick: (w) => {
             if (attackMoveRef.current) {
               cancelAttackMove();
+              return;
+            }
+            if (buildKeyRef.current) {
+              buildKeyRef.current = false;
+              setBuildKeyMode(false);
               return;
             }
             if (placingRef.current) {
@@ -595,6 +896,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
       fog = null;
       controller.selection.setOnChange(null);
       controllerRef.current = null;
+      rendererRef.current = null;
       ghostRef.current = null;
       placingRef.current = null;
       setPlacing(null);
@@ -702,6 +1004,14 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         </div>
       )}
 
+      {/* Banner chế độ xây nhanh kiểu AoE: B rồi phím nhà */}
+      {buildKeyMode && !placing && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-30 max-w-[94vw] -translate-x-1/2 rounded bg-blue-600/95 px-4 py-1.5 text-center text-sm font-bold text-white">
+          🏠 Xây nhanh: bấm phím nhà — E Nhà sàn • F Ruộng lúa • T Chòi canh • B Trại lính • A Trường
+          bắn • L Chuồng ngựa • N Đình làng • S Nhà kho • G Kho thóc • W Lũy đất • ESC / chuột phải hủy
+        </div>
+      )}
+
       {/* Banner lên đời: trống đồng + tên thời + flavor */}
       {ageBanner && (
         <div className="pointer-events-none absolute left-1/2 top-1/3 z-40 -translate-x-1/2 -translate-y-1/2 text-center">
@@ -724,12 +1034,41 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         </div>
       )}
 
-      {/* Banner tạm dừng (net mode) */}
+      {/* Banner tạm dừng (net mode: server báo; local: phím P/F3) */}
       {paused && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 z-40 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/85 px-10 py-6 text-center">
           <div className="text-3xl">⏸</div>
           <div className="mt-2 text-xl font-bold text-amber-200">Trận đấu tạm dừng</div>
-          <div className="mt-1 text-sm text-amber-100/60">Đang chờ server tiếp tục...</div>
+          <div className="mt-1 text-sm text-amber-100/60">
+            {isNet ? 'Đang chờ server tiếp tục...' : 'Bấm P / F3 để tiếp tục'}
+          </div>
+        </div>
+      )}
+
+      {/* Overlay bảng phím tắt (F1) */}
+      {showHelp && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-h-[86vh] w-[560px] max-w-[94vw] overflow-y-auto rounded-xl bg-[#1a1410] p-6 text-amber-100 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="text-xl font-black text-rom">⌨️ Phím tắt (kiểu AoE)</div>
+              <button
+                className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
+                onClick={() => setShowHelp(false)}
+              >
+                Đóng (ESC)
+              </button>
+            </div>
+            <div className="space-y-1.5 text-sm">
+              {HOTKEY_HELP.map(([k, desc]) => (
+                <div key={k} className="flex items-start gap-3">
+                  <span className="w-44 shrink-0 rounded bg-white/10 px-2 py-0.5 font-mono text-xs font-bold text-amber-300">
+                    {k}
+                  </span>
+                  <span className="text-amber-100/85">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -833,6 +1172,13 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         )}
         <button
           className="rounded bg-tre px-4 py-2 text-sm font-semibold text-white hover:brightness-110"
+          title="Bảng phím tắt (F1)"
+          onClick={() => setShowHelp((v) => !v)}
+        >
+          ❓
+        </button>
+        <button
+          className="rounded bg-tre px-4 py-2 text-sm font-semibold text-white hover:brightness-110"
           title={mutedUi ? 'Bật tiếng' : 'Tắt tiếng'}
           onClick={() => {
             const m = !mutedUi;
@@ -850,7 +1196,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
             title="Phím tắt: A"
             onClick={() => (attackMove ? cancelAttackMove() : enterAttackMove())}
           >
-            ⚔️ Tấn công-di chuyển
+            ⚔ Tấn công (A)
           </button>
         )}
         {isNet && (
@@ -893,6 +1239,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
           </div>
           <div className="flex gap-1">
             <input
+              ref={chatInputRef}
               className="min-w-0 flex-1 rounded bg-white/10 px-2 py-1 outline-none focus:bg-white/15"
               value={chatInput}
               maxLength={200}
@@ -999,7 +1346,7 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
         <div className="absolute bottom-3 left-1/2 z-30 w-[560px] max-w-[94vw] -translate-x-1/2 rounded bg-black/70 px-4 py-3 text-amber-100">
           <div className="mb-2 flex items-center justify-between">
             <div className="text-sm font-bold text-rom">
-              Xây dựng {placing && BUILDINGS[placing] ? `— đang đặt: ${BUILDINGS[placing].vnName}` : ''}
+              Xây dựng — B rồi phím nhà {placing && BUILDINGS[placing] ? `• đang đặt: ${BUILDINGS[placing].vnName}` : ''}
             </div>
             {placing && (
               <button
@@ -1016,17 +1363,20 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
               if (!def) return null;
               const ok = affordable(def.cost, res);
               const active = placing === id;
+              const hk = BUILD_HOTKEY_LABELS[id];
               return (
                 <button
                   key={id}
                   onClick={() => startPlacement(id)}
                   disabled={!ok}
-                  title={formatCost(def.cost)}
+                  title={`${formatCost(def.cost)} — phím nhanh: B rồi ${hk}`}
                   className={`rounded px-2 py-1.5 text-left text-xs text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 ${
                     active ? 'bg-amber-500 text-black' : 'bg-tre'
                   }`}
                 >
-                  <div className="font-semibold leading-4">{def.vnName}</div>
+                  <div className="font-semibold leading-4">
+                    {def.vnName} <span className="text-amber-300/80">({hk})</span>
+                  </div>
                   <div className="mt-0.5 text-[10px] leading-3 text-amber-100/70">
                     {formatCost(def.cost)}
                   </div>
@@ -1039,12 +1389,11 @@ export function GameView({ mode = 'local', room, tutorial = false }: GameViewPro
 
       {/* Hướng dẫn điều khiển */}
       <div className="pointer-events-none absolute bottom-3 left-3 z-30 rounded bg-black/60 px-3 py-2 text-[11px] leading-5 text-amber-100/80">
-        <div className="font-bold text-rom">Điều khiển</div>
-        <div>Kéo chuột trái: chọn nhiều unit • Click trái: chọn 1 • Click phải: ra lệnh di chuyển</div>
-        <div>Phím A (hoặc nút ⚔️): tấn công-di chuyển — quân đang chọn sẽ đánh mọi địch trên đường</div>
-        <div>Chọn dân → panel dưới → click nhà → click trái trên map để đặt (ESC/chuột phải hủy)</div>
-        <div>Giữ chuột giữa kéo • WASD / mũi tên • dí chuột sát viền → di chuyển camera</div>
-        <div>Lăn chuột → zoom 0.4x–2.5x • Click minimap góc dưới-phải → nhảy camera</div>
+        <div className="font-bold text-rom">Điều khiển kiểu AoE <span className="font-normal text-amber-100/60">(F1: bảng đầy đủ)</span></div>
+        <div>1..9 chọn nhóm (Ctrl+1..9 gán) • H: Đình làng • . : dân nhàn rỗi • B rồi phím nhà: xây nhanh</div>
+        <div>Click trái chọn (kéo: nhiều) • Shift+click: thêm/bớt • Double-click: chọn cùng loại • Click phải: ra lệnh</div>
+        <div>A: tấn công-di chuyển • S: dừng • Delete: xóa • Space: về chỗ chọn • P/F3: tạm dừng • ESC: hủy</div>
+        <div>Mũi tên / chuột giữa kéo / dí viền: camera • Lăn chuột: zoom • Click minimap: nhảy camera</div>
       </div>
     </div>
   );

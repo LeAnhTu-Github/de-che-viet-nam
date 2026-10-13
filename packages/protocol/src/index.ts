@@ -24,7 +24,13 @@ export interface ChatMessage {
   text: string;
 }
 
-export type ClientMessage = JoinMessage | CommandMessage | ChatMessage;
+/** Xin pause/resume trận (phím P/F3) — server broadcast 'paused'/'resumed'. */
+export interface PauseMessage {
+  kind: 'pause';
+  paused: boolean;
+}
+
+export type ClientMessage = JoinMessage | CommandMessage | ChatMessage | PauseMessage;
 
 // ---------- Server -> Client ----------
 

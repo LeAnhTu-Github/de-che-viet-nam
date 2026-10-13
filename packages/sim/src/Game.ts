@@ -26,6 +26,8 @@ import type {
   ResearchCommand,
   ResourceBag,
   ResourceType,
+  StopCommand,
+  DeleteCommand,
   TrainCommand,
 } from './types';
 import { Rng } from './rng';
@@ -396,8 +398,40 @@ export class Game {
       case 'research':
         applyResearchCommand(this, cmd);
         break;
+      case 'stop':
+        this.applyStop(cmd);
+        break;
+      case 'delete':
+        this.applyDelete(cmd);
+        break;
       default:
         break;
+    }
+  }
+
+  /** Lệnh stop (phím S): unit đứng yên, hủy gather/build/return/attack đang dang dở. */
+  private applyStop(cmd: StopCommand): void {
+    for (const id of cmd.unitIds) {
+      const e = this.entities.get(id);
+      if (!e || e.kind !== 'unit') continue; // id lạ hoặc không phải unit
+      if (e.playerId !== cmd.playerId) continue; // không phải unit của người gửi
+      if (e.hp <= 0) continue; // đã chết
+      e.targetNodeId = null;
+      e.buildTargetId = null;
+      this.returnTargets.delete(id);
+      this.moveTracks.delete(id);
+      e.state = 'idle';
+    }
+  }
+
+  /** Lệnh delete (phím Delete): phá unit/nhà của chính mình. */
+  private applyDelete(cmd: DeleteCommand): void {
+    for (const id of cmd.unitIds) {
+      const e = this.entities.get(id);
+      if (!e) continue;
+      if (e.kind !== 'unit' && e.kind !== 'building') continue;
+      if (e.playerId !== cmd.playerId) continue; // không được xóa đồ của địch
+      this.removeEntity(id);
     }
   }
 

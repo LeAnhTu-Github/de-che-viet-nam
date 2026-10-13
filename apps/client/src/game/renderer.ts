@@ -11,6 +11,7 @@ import { Camera } from './camera';
 import { TILE_SIZE, type GameMap } from './map';
 import { getTileTextures, destroyTileTextures } from './textures';
 import { EntityView, type EntityData } from './entityView';
+import { ensureSpriteManifest } from './spriteManager';
 import { InputManager, type InputCallbacks } from './input';
 import { Minimap, type MinimapDot } from './minimap';
 import type { SimProjectile, VisionMap } from './localGame';
@@ -59,6 +60,12 @@ export class GameRenderer {
     this.camera.mapW = map.width * TILE_SIZE;
     this.camera.mapH = map.height * TILE_SIZE;
     this.camera.setViewport(this.container.clientWidth, this.container.clientHeight);
+
+    // Load manifest sprite (không chặn quá 3s; thiếu → dùng placeholder)
+    await Promise.race([
+      ensureSpriteManifest(),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
 
     this.buildGround(map);
 

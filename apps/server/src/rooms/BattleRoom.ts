@@ -37,6 +37,8 @@ const VALID_CMD_TYPES = new Set([
   'build',
   'train',
   'research',
+  'stop',
+  'delete',
 ]);
 
 interface PlayerSlot {
@@ -89,6 +91,15 @@ export class BattleRoom extends Room {
         this.broadcast('chat', { kind: 'chat', from, text });
       } else if (message.kind === 'command') {
         this.handleCommand(client, message.command as unknown as Record<string, unknown>);
+      } else if (message.kind === 'pause') {
+        // Người chơi bấm P/F3: pause/resume trận cho cả 2 bên (giống bản gốc).
+        const pid = this.sessionToPid.get(client.sessionId);
+        if (pid === undefined || !this.started || this.isOver()) return;
+        const want = (message as { paused?: unknown }).paused === true;
+        if (want === this.paused) return;
+        this.paused = want;
+        console.log(`[room:${this.roomId}] pid=${pid} ${want ? 'tạm dừng' : 'tiếp tục'} trận`);
+        this.broadcast(want ? 'paused' : 'resumed', { kind: want ? 'paused' : 'resumed' });
       }
     });
   }

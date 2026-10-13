@@ -61,28 +61,49 @@ export function syncEntitiesToRenderer(
   for (const e of entities.values()) {
     seen.add(e.id);
     let view = views.get(e.id);
+    const defId = defIdOf(e);
+    const isUnit = (e as SimUnitEntity).kind === 'unit';
+    const isBuilding = e.kind === 'building';
+    const isResource = e.kind === 'resource';
+    // Resource node sim không có hp/maxHp — dùng amount (HP bar = lượng còn lại)
+    const resAmt = isResource ? ((e as { amount?: number }).amount ?? 0) : undefined;
+    const resMax = isResource ? maxHpOf(e.kind, defId, 0) : undefined;
+    const effHp = resAmt ?? e.hp;
+    const effMaxHp = resMax ?? e.maxHp;
     if (!view) {
       view = renderer.spawnEntity({
         kind: mapKind(e),
         label: vnLabel(e),
         x: e.x,
         y: e.y,
-        hp: e.hp,
-        maxHp: e.maxHp,
+        hp: effHp,
+        maxHp: effMaxHp,
         selected: selection.has(e.id),
         playerId: e.playerId,
+        defId,
+        unitState: isUnit ? (e as SimUnitEntity).state : undefined,
+        buildProgress: isBuilding
+          ? ((e as { progress?: number }).progress ?? 1)
+          : undefined,
+        resAmount: resAmt,
+        resMaxAmount: resMax,
       });
       views.set(e.id, view);
     } else {
-      view.position.set(e.x, e.y);
-      if (view.data.hp !== e.hp || view.data.maxHp !== e.maxHp) {
-        view.setHp(e.hp, e.maxHp);
+      // syncPosition tự suy hướng nhìn (facing) từ vector di chuyển của unit
+      view.syncPosition(e.x, e.y);
+      if (view.data.hp !== effHp || view.data.maxHp !== effMaxHp) {
+        view.setHp(effHp, effMaxHp);
       }
       const sel = selection.has(e.id);
       if (view.data.selected !== sel) view.setSelected(sel);
-    }
-    if ((e as SimUnitEntity).kind === 'unit') {
-      view.setState((e as SimUnitEntity).state);
+      if (isUnit) {
+        view.setUnitState((e as SimUnitEntity).state);
+      } else if (isBuilding) {
+        view.setBuildProgress((e as { progress?: number }).progress ?? 1);
+      } else if (isResource) {
+        view.setResourceAmount(resAmt ?? 0, resMax ?? 0);
+      }
     }
   }
   for (const [id, view] of views) {
@@ -131,6 +152,10 @@ export interface GameController {
   issueResearch(buildingId: number, techId: string): void;
   /** Ra lệnh khai thác node tài nguyên (Phase 7: client trước đây chưa từng gửi gather!). */
   issueGather(targetId: number, resource: ResourceType): void;
+  /** Ra lệnh dừng (phím S): unit đứng yên, hủy nhiệm vụ. */
+  issueStop(): void;
+  /** Ra lệnh xóa (phím Delete): phá unit/nhà đang chọn của phe mình. */
+  issueDelete(): void;
 
   humanResources(): HumanResState;
   drainAgeUpEvents(): { playerId: number; ageName: string; flavor: string }[];

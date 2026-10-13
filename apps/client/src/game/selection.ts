@@ -57,4 +57,19 @@ export class SelectionManager {
     for (const id of next) this.selected.add(id);
     this.onChange?.();
   }
+
+  /**
+   * Shift+click (giống AoE): có rồi → bỏ ra, chưa có → thêm vào.
+   * Trả về true nếu sau toggle entity đang được chọn.
+   */
+  toggle(id: number): boolean {
+    if (this.selected.has(id)) {
+      this.selected.delete(id);
+      this.onChange?.();
+      return false;
+    }
+    this.selected.add(id);
+    this.onChange?.();
+    return true;
+  }
 }

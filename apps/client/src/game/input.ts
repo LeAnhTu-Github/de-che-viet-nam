@@ -2,7 +2,8 @@
  * input.ts — Điều khiển camera + chọn unit cho RTS (Phase 1b → 2b).
  *
  * CHỐT theo spec:
- * - Pan: GIỮ CHUỘT GIỮA kéo, HOẶC phím mũi tên / WASD, HOẶC dí chuột sát viền (edge-scroll).
+ * - Pan: GIỮ CHUỘT GIỮA kéo, HOẶC phím mũi tên, HOẶC dí chuột sát viền (edge-scroll).
+ *   (Bỏ WASD từ bản phím tắt AoE: A = attack-move, S = stop — giống bản gốc AoE1.)
  * - Zoom: lăn chuột, 0.4x–2.5x, zoom vào đúng vị trí con trỏ.
  * - Chuột trái: click = chọn 1 unit; nhấn+kéo = khung chọn nhiều unit (Phase 2b).
  * - Chuột phải: ra lệnh di chuyển tới vị trí click (Phase 2b).
@@ -170,10 +171,11 @@ export class InputManager {
     let dx = 0;
     let dy = 0;
     const k = this.keys;
-    if (k.has('arrowleft') || k.has('a')) dx -= 1;
-    if (k.has('arrowright') || k.has('d')) dx += 1;
-    if (k.has('arrowup') || k.has('w')) dy -= 1;
-    if (k.has('arrowdown') || k.has('s')) dy += 1;
+    // Chỉ phím mũi tên (WASD đã nhường cho phím tắt AoE: A = attack-move, S = stop).
+    if (k.has('arrowleft')) dx -= 1;
+    if (k.has('arrowright')) dx += 1;
+    if (k.has('arrowup')) dy -= 1;
+    if (k.has('arrowdown')) dy += 1;
 
     if (this.mouseIn && !this.panning) {
       const w = this.canvas.clientWidth;

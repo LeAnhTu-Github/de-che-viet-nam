@@ -380,6 +380,31 @@ export class NetGameController {
     this.sendCommand({ type: 'gather', playerId: this.humanPlayerId, unitIds: ids, targetId, resource });
   }
 
+  /** Ra lệnh dừng (phím S): các unit đang chọn của phe mình đứng yên, hủy nhiệm vụ. */
+  issueStop(): void {
+    const owned = new Set(this.unitsOfPlayer(this.humanPlayerId).map((u) => u.id));
+    const ids = [...this.selection.selected].filter((id) => owned.has(id));
+    if (ids.length === 0) return;
+    this.sendCommand({ type: 'stop', playerId: this.humanPlayerId, unitIds: ids });
+  }
+
+  /** Ra lệnh xóa (phím Delete): phá unit/nhà đang chọn của phe mình. */
+  issueDelete(): void {
+    const ids = [...this.selection.selected].filter((id) => {
+      const e = this.interp.get(id);
+      return !!e && e.playerId === this.humanPlayerId && (e.kind === 'unit' || e.kind === 'building');
+    });
+    if (ids.length === 0) return;
+    this.sendCommand({ type: 'delete', playerId: this.humanPlayerId, unitIds: ids });
+    this.selection.clear();
+  }
+
+  /** Xin pause/resume trận (phím P/F3) — server broadcast 'paused'/'resumed'. */
+  sendPause(paused: boolean): void {
+    if (!this.room) return;
+    this.room.send('pause', { kind: 'pause', paused });
+  }
+
   /** Ra lệnh research tech tại nhà (entity id). */
   issueResearch(buildingId: number, techId: string): void {
     this.sendCommand({

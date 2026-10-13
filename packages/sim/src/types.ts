@@ -88,6 +88,20 @@ export interface TrainCommand {
   unitDefId: string; // id trong UNITS
 }
 
+/** Lệnh dừng: unit đứng yên tại chỗ, hủy mọi nhiệm vụ (phím S). */
+export interface StopCommand {
+  type: 'stop';
+  playerId: PlayerId; // người chơi gửi lệnh — sim validate quyền sở hữu unit
+  unitIds: EntityId[];
+}
+
+/** Lệnh xóa (phím Delete): phá unit/nhà của chính mình. */
+export interface DeleteCommand {
+  type: 'delete';
+  playerId: PlayerId; // người chơi gửi lệnh — sim validate quyền sở hữu
+  unitIds: EntityId[]; // id entity (unit hoặc building)
+}
+
 /** Mọi lệnh player có thể gửi — server validate rồi mới đưa vào sim. */
 export type Command =
   | MoveCommand
@@ -96,6 +110,8 @@ export type Command =
   | GatherCommand
   | BuildCommand
   | TrainCommand
+  | StopCommand
+  | DeleteCommand
   | ResearchCommand;
 
 /** Event sim phát cho client (client đọc rồi clear). */
